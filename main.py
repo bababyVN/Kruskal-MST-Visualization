@@ -11,11 +11,17 @@ SCREEN_SIZE = (1280, 720)
 STATE_EDIT = 0
 STATE_RUN = 1
 
-TEST_VERTICES = 50
-TEST_EDGES = 100
+TEST_VERTICES = 5000 
+TEST_EDGES = 25000
 
-def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, slider_val, slider_rect, is_paused):
+def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, slider_val, slider_rect, state_data):
+    """
+    Draws the UI overlay.
+    state_data: The raw GPU buffer array containing the status (0, 1, or 2) of every edge.
+    """
     surface.fill((0,0,0,0))
+    
+    # --- 1. SLIDER ---
     pygame.draw.rect(surface, (40, 40, 40), slider_rect)
     pygame.draw.rect(surface, (200, 200, 200), slider_rect, 2)
     fill_width = int(slider_rect.width * slider_val)
@@ -25,6 +31,7 @@ def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, sl
     speed_text = "Step-by-Step" if slider_val < 0.05 else f"Auto Speed: {int(slider_val*100)}%"
     surface.blit(font.render(speed_text, True, (255,255,255)), (slider_rect.x, slider_rect.y - 20))
 
+    # --- 2. STATS ---
     status_font = pygame.font.SysFont("Consolas", 18)
     target = total_vertices - 1
     status_txt = f"MST Edges: {edges_in_mst} / {target}"
@@ -39,6 +46,65 @@ def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, sl
         col = (255, 255, 0)
         
     surface.blit(status_font.render(status_txt, True, col), (20, 20))
+
+    # --- 3. EDGE QUEUE (With History) ---
+    if len(sorted_edges) > 0:
+        table_width = 240
+        table_x = SCREEN_SIZE[0] - table_width
+        
+        # Draw Table Background
+        pygame.draw.rect(surface, (0, 0, 0, 200), (table_x, 0, table_width, SCREEN_SIZE[1]))
+        
+        header = status_font.render("Edge Queue", True, (0, 255, 255))
+        surface.blit(header, (table_x + 10, 10))
+        
+        row_height = 25
+        start_y = 50
+        
+        # We start displaying from "current_idx - 1" so we can see what just happened
+        start_display_idx = max(0, current_idx - 1)
+        
+        for i in range(25): # Show 25 rows
+            idx = start_display_idx + i
+            if idx >= len(sorted_edges):
+                break
+                
+            u, v, w = sorted_edges[idx]
+            
+            # --- DETERMINE ROW STYLE ---
+            bg_color = None
+            text_color = (180, 180, 180)
+            prefix = "   "
+            
+            if idx < current_idx:
+                # [PAST] This edge was already processed. Check its status!
+                # Status is stored in state_data[idx*2]
+                status = state_data[idx*2]
+                
+                if status > 1.9: # Status 2 = MST (Accepted)
+                    bg_color = (255, 215, 0, 80) # Gold background
+                    text_color = (255, 255, 200)
+                    prefix = "MST "
+                elif status > 0.9: # Status 1 = Rejected (Deleted)
+                    bg_color = (255, 0, 0, 150) # RED FLASH background
+                    text_color = (255, 200, 200)
+                    prefix = "DEL "
+            
+            elif idx == current_idx:
+                # [PRESENT] The active edge
+                bg_color = (0, 255, 100, 50) # Greenish highlight
+                text_color = (255, 255, 255)
+                prefix = "-> "
+            
+            # --- DRAW ROW ---
+            row_rect = (table_x, start_y + i * row_height, table_width, row_height)
+            
+            if bg_color:
+                pygame.draw.rect(surface, bg_color, row_rect)
+            
+            # Draw Text
+            row_txt = f"{prefix}{int(u)}-{int(v)} : {w:.1f}"
+            surface.blit(font.render(row_txt, True, text_color), (table_x + 10, start_y + i * row_height + 5))
 
 def main():
     pygame.init()
@@ -92,14 +158,12 @@ def main():
                     pygame.display.set_caption("Edit Mode")
 
                 elif event.key == pygame.K_t and current_state == STATE_EDIT:
-                    # LIMIT TEST: Generate circular data
-                    # We MUST use aspect correction here, otherwise the circle looks like an oval
+                    # LIMIT TEST (Circular)
                     sorted_edges, sorted_geom, nodes = logic.prepare_data(TEST_VERTICES, TEST_EDGES)
                     n_vertices = len(nodes)
                     parent = np.arange(n_vertices)
                     rank = np.zeros(n_vertices, dtype=np.int32)
                     
-                    # correct_aspect=True for Procedural Data
                     graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom, correct_aspect=True)
                     w, h = screen.get_size()
                     graph_renderer.aspect_ratio = w / h
@@ -111,8 +175,7 @@ def main():
                     current_state = STATE_RUN; speed_value = 0
 
                 elif event.key == pygame.K_RETURN and current_state == STATE_EDIT:
-                    # NORMAL RUN: Data from Editor
-                    # We MUST NOT use aspect correction, because the Editor already stretched the coords
+                    # NORMAL RUN
                     raw_edges, geom, nodes = graph_editor.export_data()
                     if raw_edges is not None and len(raw_edges) > 0:
                         sorted_indices = np.argsort(raw_edges[:, 2])
@@ -127,7 +190,6 @@ def main():
                         parent = np.arange(n_vertices)
                         rank = np.zeros(n_vertices, dtype=np.int32)
                         
-                        # correct_aspect=False for Editor Data
                         graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom, correct_aspect=False)
                         w, h = screen.get_size()
                         graph_renderer.aspect_ratio = w / h
@@ -185,14 +247,11 @@ def main():
                 current_edge_idx += processed
                 mst_edges_count += added 
 
-            # Force first update or periodic update
             if frame_count == 1 or frame_count % 10 == 0 or should_step:
                  roots = logic.get_all_roots(parent)
                  statuses = logic.get_node_statuses(parent, rank)
-                 
                  valid_roots = roots[:len(circle_renderer.colors)]
                  valid_stats = statuses[:len(circle_renderer.colors)]
-                 
                  circle_renderer.update_state(valid_roots, valid_stats)
 
             graph_renderer.render()
@@ -200,7 +259,11 @@ def main():
             pt_size = 5.0 if len(parent) > 2000 else 12.0
             circle_renderer.render(graph_renderer.current_matrix, point_size=pt_size)
             
-            draw_ui(ui_surface, sorted_edges, current_edge_idx, mst_edges_count, len(parent), speed_value, slider_rect, is_paused)
+            # --- PASS state_data TO UI ---
+            draw_ui(ui_surface, sorted_edges, current_edge_idx, mst_edges_count, 
+                    len(parent), speed_value, slider_rect, 
+                    graph_renderer.state_data) # <--- NEW ARGUMENT
+            
             ui_renderer.update_texture(ui_surface)
             ui_renderer.render()
 
