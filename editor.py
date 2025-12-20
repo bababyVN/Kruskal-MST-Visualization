@@ -19,6 +19,7 @@ class GraphEditor:
         self.dragging_edge = False
         
         self.font = pygame.font.SysFont("Arial", 16)
+        self.node_font = pygame.font.SysFont("Arial", 12, bold=True) # New font for numbers
         
         # Tkinter hidden root for file dialog
         root = tk.Tk()
@@ -136,7 +137,12 @@ class GraphEditor:
         # Nodes
         for i, (x, y) in enumerate(self.nodes):
             color = (255, 100, 100) if i == self.hovered_node else (50, 150, 255)
-            pygame.draw.circle(self.surface, color, (int(x), int(y)), 10)
+            pygame.draw.circle(self.surface, color, (int(x), int(y)), 12) # Slightly larger circle
+            
+            # Draw Node Number
+            id_text = self.node_font.render(str(i), True, (255, 255, 255))
+            id_rect = id_text.get_rect(center=(int(x), int(y)))
+            self.surface.blit(id_text, id_rect)
             
         return self.surface
 
