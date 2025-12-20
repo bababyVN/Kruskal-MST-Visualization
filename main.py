@@ -15,17 +15,10 @@ TEST_VERTICES = 5000
 TEST_EDGES = 25000
 
 def project_point(point, width, height, offset, zoom, aspect_ratio, correct_aspect):
-    """
-    Transforms a point from World Space (-1 to 1) to Screen Space (pixels).
-    Must match the vertex shader logic in gui.py!
-    """
     x, y = point[0], point[1]
-    
-    # 1. Translate
     x += offset[0]
     y += offset[1]
     
-    # 2. Scale (Zoom & Aspect)
     if correct_aspect and aspect_ratio > 1.0:
         x *= (zoom / aspect_ratio)
         y *= zoom
@@ -33,63 +26,58 @@ def project_point(point, width, height, offset, zoom, aspect_ratio, correct_aspe
         x *= zoom
         y *= (zoom * aspect_ratio)
     else:
-        # If Editor Mode, we didn't correct aspect, so scaling is uniform
         x *= zoom
         y *= zoom
         
-    # 3. Viewport (Clip Space -1..1 to Screen Space 0..W)
     screen_x = (x + 1.0) * width / 2.0
-    screen_y = (1.0 - y) * height / 2.0 # Flip Y
-    
+    screen_y = (1.0 - y) * height / 2.0 
     return int(screen_x), int(screen_y)
 
 def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, slider_val, slider_rect, state_data, 
-            nodes, renderer):
-    """
-    Draws UI overlay including labels for nodes/edges in the 3D view.
-    """
+            nodes, renderer, ui_state):
     surface.fill((0,0,0,0))
     w, h = surface.get_size()
+    interactive_rects = {}
     
-    # --- 1. LABELS (Nodes & Weights) ---
-    # Only draw if graph is small enough to be readable/performant
+    # --- 1. LABELS (Conditional) ---
     if total_vertices < 500:
         font = pygame.font.SysFont("Arial", 12, bold=True)
         weight_font = pygame.font.SysFont("Arial", 11)
         
-        # Draw Edge Weights
-        # (We iterate all edges; for performance on medium graphs, maybe limit this)
-        for u, v, weight in sorted_edges:
-            # Get positions of u and v
-            if int(u) < len(nodes) and int(v) < len(nodes):
-                p1 = nodes[int(u)]
-                p2 = nodes[int(v)]
+        # Draw Weights (Only if show_weights is TRUE AND edge is not rejected)
+        if ui_state['show_weights']:
+            # We iterate by index because we need to check state_data[i]
+            for i, (u, v, weight) in enumerate(sorted_edges):
+                # If i >= current_idx, status is 0 (Unseen). Safe to draw.
+                # If i < current_idx, check status.
                 
-                # Project to screen
-                s1 = project_point(p1, w, h, renderer.offset, renderer.zoom, renderer.aspect_ratio, renderer.correct_aspect)
-                s2 = project_point(p2, w, h, renderer.offset, renderer.zoom, renderer.aspect_ratio, renderer.correct_aspect)
+                should_draw = True
+                if i < current_idx:
+                    status = state_data[i*2]
+                    if status > 0.9 and status < 1.9: # Status 1.0 = Rejected
+                        should_draw = False # HIDE LABEL
                 
-                # Midpoint
-                mid_x = (s1[0] + s2[0]) // 2
-                mid_y = (s1[1] + s2[1]) // 2
-                
-                # Simple check if on screen
-                if 0 <= mid_x <= w and 0 <= mid_y <= h:
-                    txt = weight_font.render(f"{int(weight)}", True, (0, 255, 255))
-                    # Draw a small black box behind text for readability
-                    bg = pygame.Rect(mid_x, mid_y, txt.get_width(), txt.get_height())
-                    pygame.draw.rect(surface, (0,0,0, 150), bg)
-                    surface.blit(txt, (mid_x, mid_y))
+                if should_draw and int(u) < len(nodes) and int(v) < len(nodes):
+                    p1 = nodes[int(u)]
+                    p2 = nodes[int(v)]
+                    s1 = project_point(p1, w, h, renderer.offset, renderer.zoom, renderer.aspect_ratio, renderer.correct_aspect)
+                    s2 = project_point(p2, w, h, renderer.offset, renderer.zoom, renderer.aspect_ratio, renderer.correct_aspect)
+                    
+                    mid_x, mid_y = (s1[0] + s2[0]) // 2, (s1[1] + s2[1]) // 2
+                    if 0 <= mid_x <= w and 0 <= mid_y <= h:
+                        txt = weight_font.render(f"{int(weight)}", True, (0, 255, 255))
+                        bg = pygame.Rect(mid_x, mid_y, txt.get_width(), txt.get_height())
+                        pygame.draw.rect(surface, (0,0,0, 150), bg)
+                        surface.blit(txt, (mid_x, mid_y))
 
-        # Draw Node Numbers
-        for i, node in enumerate(nodes):
-            sx, sy = project_point(node, w, h, renderer.offset, renderer.zoom, renderer.aspect_ratio, renderer.correct_aspect)
-            
-            # Culling: Only draw if on screen
-            if -20 <= sx <= w + 20 and -20 <= sy <= h + 20:
-                txt = font.render(str(i), True, (255, 255, 255))
-                rect = txt.get_rect(center=(sx, sy))
-                surface.blit(txt, rect)
+        # Draw Node IDs
+        if ui_state['show_ids']:
+            for i, node in enumerate(nodes):
+                sx, sy = project_point(node, w, h, renderer.offset, renderer.zoom, renderer.aspect_ratio, renderer.correct_aspect)
+                if -20 <= sx <= w + 20 and -20 <= sy <= h + 20:
+                    txt = font.render(str(i), True, (255, 255, 255))
+                    rect = txt.get_rect(center=(sx, sy))
+                    surface.blit(txt, rect)
     
     # --- 2. SLIDER ---
     pygame.draw.rect(surface, (40, 40, 40), slider_rect)
@@ -105,32 +93,55 @@ def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, sl
     status_font = pygame.font.SysFont("Consolas", 18)
     target = total_vertices - 1
     status_txt = f"MST Edges: {edges_in_mst} / {target}"
-    
-    if edges_in_mst >= target:
-        status_txt += " [COMPLETE]"
-        col = (0, 255, 0)
-    elif current_idx >= len(sorted_edges):
+    col = (0, 255, 0) if edges_in_mst >= target else (255, 255, 0)
+    if current_idx >= len(sorted_edges) and edges_in_mst < target: 
         status_txt += " [FAILED]"
         col = (255, 0, 0)
-    else:
-        col = (255, 255, 0)
-        
     surface.blit(status_font.render(status_txt, True, col), (20, 20))
+    
+    # --- 4. TOGGLES (Checkboxes) ---
+    # IDs Toggle
+    cb_ids = pygame.Rect(20, 50, 20, 20)
+    interactive_rects['toggle_ids'] = cb_ids
+    pygame.draw.rect(surface, (50, 50, 50), cb_ids)
+    pygame.draw.rect(surface, (200, 200, 200), cb_ids, 2)
+    if ui_state['show_ids']:
+        pygame.draw.lines(surface, (0, 255, 0), False, [(cb_ids.x+4, cb_ids.y+10), (cb_ids.x+8, cb_ids.y+16), (cb_ids.x+16, cb_ids.y+4)], 2)
+    surface.blit(font.render("Show IDs", True, (255,255,255)), (cb_ids.right+10, cb_ids.y))
+    
+    # Weights Toggle
+    cb_w = pygame.Rect(20, 80, 20, 20)
+    interactive_rects['toggle_weights'] = cb_w
+    pygame.draw.rect(surface, (50, 50, 50), cb_w)
+    pygame.draw.rect(surface, (200, 200, 200), cb_w, 2)
+    if ui_state['show_weights']:
+        pygame.draw.lines(surface, (0, 255, 0), False, [(cb_w.x+4, cb_w.y+10), (cb_w.x+8, cb_w.y+16), (cb_w.x+16, cb_w.y+4)], 2)
+    surface.blit(font.render("Show Weights", True, (255,255,255)), (cb_w.right+10, cb_w.y))
 
-    # --- 4. EDGE QUEUE ---
-    if len(sorted_edges) > 0:
-        table_width = 240
-        table_x = SCREEN_SIZE[0] - table_width
-        pygame.draw.rect(surface, (0, 0, 0, 200), (table_x, 0, table_width, SCREEN_SIZE[1]))
+    # --- 5. EDGE QUEUE TABLE ---
+    table_width = 240
+    table_x = w - table_width if ui_state['show_table'] else w
+    
+    toggle_rect = pygame.Rect(table_x - 30, 10, 30, 30)
+    interactive_rects['table_toggle'] = toggle_rect
+    
+    pygame.draw.rect(surface, (40, 40, 40), toggle_rect, border_top_left_radius=5, border_bottom_left_radius=5)
+    arrow_txt = ">" if ui_state['show_table'] else "<"
+    arrow_surf = font.render(arrow_txt, True, (255, 255, 255))
+    surface.blit(arrow_surf, (toggle_rect.centerx - arrow_surf.get_width()//2, toggle_rect.centery - arrow_surf.get_height()//2))
+
+    if ui_state['show_table'] and len(sorted_edges) > 0:
+        pygame.draw.rect(surface, (0, 0, 0, 200), (table_x, 0, table_width, h))
         header = status_font.render("Edge Queue", True, (0, 255, 255))
         surface.blit(header, (table_x + 10, 10))
         
         row_height = 25
         start_y = 50
-        start_display_idx = max(0, current_idx - 1)
+        max_rows = (h - start_y) // row_height
+        start_idx = ui_state['scroll']
         
-        for i in range(25):
-            idx = start_display_idx + i
+        for i in range(max_rows):
+            idx = start_idx + i
             if idx >= len(sorted_edges): break
             u, v, w = sorted_edges[idx]
             
@@ -153,11 +164,14 @@ def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, sl
                 text_color = (255, 255, 255)
                 prefix = "-> "
             
+            row_rect = pygame.Rect(table_x, start_y + i * row_height, table_width, row_height)
             if bg_color:
-                pygame.draw.rect(surface, bg_color, (table_x, start_y + i * row_height, table_width, row_height))
+                pygame.draw.rect(surface, bg_color, row_rect)
             
             row_txt = f"{prefix}{int(u)}-{int(v)} : {w:.1f}"
             surface.blit(font.render(row_txt, True, text_color), (table_x + 10, start_y + i * row_height + 5))
+            
+    return interactive_rects
 
 def main():
     pygame.init()
@@ -179,13 +193,21 @@ def main():
     sorted_edges = []
     parent = []
     rank = []
-    nodes = [] # Store nodes here for UI drawing
+    nodes = []
     
     current_edge_idx = 0
     mst_edges_count = 0
     speed_value = 0.0
     slider_rect = pygame.Rect(20, SCREEN_SIZE[1] - 50, 200, 30)
     ui_surface = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
+    
+    ui_state = {
+        'scroll': 0,
+        'show_table': True,
+        'show_ids': True,     # DEFAULT ON
+        'show_weights': True  # DEFAULT ON
+    }
+    ui_rects = {}
     
     clock = pygame.time.Clock()
     is_paused = True
@@ -204,6 +226,8 @@ def main():
                 ctx.viewport = (0, 0, event.w, event.h)
                 if graph_renderer:
                     graph_renderer.aspect_ratio = event.w / event.h
+                ui_surface = pygame.Surface((event.w, event.h), pygame.SRCALPHA)
+                slider_rect.y = event.h - 50
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_r: 
@@ -214,8 +238,7 @@ def main():
                 elif event.key == pygame.K_t and current_state == STATE_EDIT:
                     # LIMIT TEST
                     sorted_edges, sorted_geom, raw_nodes = logic.prepare_data(TEST_VERTICES, TEST_EDGES)
-                    nodes = raw_nodes # Save for UI
-                    
+                    nodes = raw_nodes
                     n_vertices = len(nodes)
                     parent = np.arange(n_vertices)
                     rank = np.zeros(n_vertices, dtype=np.int32)
@@ -229,11 +252,13 @@ def main():
                     
                     current_edge_idx = 0; mst_edges_count = 0
                     current_state = STATE_RUN; speed_value = 0.15
+                    ui_state['show_ids'] = False # Disable for massive graph
+                    ui_state['show_weights'] = False
 
                 elif event.key == pygame.K_RETURN and current_state == STATE_EDIT:
                     # NORMAL RUN
-                    raw_edges, geom, raw_nodes = graph_editor.export_data() # raw_nodes are normalized -1..1
-                    nodes = raw_nodes # Save for UI
+                    raw_edges, geom, raw_nodes = graph_editor.export_data()
+                    nodes = raw_nodes
                     
                     if raw_edges is not None and len(raw_edges) > 0:
                         sorted_indices = np.argsort(raw_edges[:, 2])
@@ -257,14 +282,44 @@ def main():
                         
                         current_edge_idx = 0; mst_edges_count = 0
                         current_state = STATE_RUN; speed_value = 0.0
+                        
+                        # Match UI state from Editor
+                        ui_state['show_ids'] = graph_editor.show_ids
+                        ui_state['show_weights'] = graph_editor.show_weights
                     else:
                         print("Empty Graph")
 
+                elif event.key == pygame.K_LEFT and current_state == STATE_RUN:
+                    if current_edge_idx > 0:
+                        current_edge_idx -= 1
+                        graph_renderer.update_states(current_edge_idx, 1, np.array([0.0, 0.0], dtype='f4'))
+                        graph_renderer.state_data[current_edge_idx*2] = 0.0
+                        graph_renderer.state_data[current_edge_idx*2+1] = 0.0
+                        parent = np.arange(len(parent))
+                        rank[:] = 0
+                        mst_edges_count = logic.fast_forward_dsu(sorted_edges, current_edge_idx, parent, rank)
+                        should_force_update = True
+                        is_paused = True
+
                 elif event.key == pygame.K_RIGHT and current_state == STATE_RUN:
-                    is_paused = False # Step manual
-                    
+                    is_paused = False 
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if current_state == STATE_RUN:
+                    if 'table_toggle' in ui_rects and ui_rects['table_toggle'].collidepoint(event.pos):
+                        ui_state['show_table'] = not ui_state['show_table']
+                    elif 'toggle_ids' in ui_rects and ui_rects['toggle_ids'].collidepoint(event.pos):
+                        ui_state['show_ids'] = not ui_state['show_ids']
+                    elif 'toggle_weights' in ui_rects and ui_rects['toggle_weights'].collidepoint(event.pos):
+                        ui_state['show_weights'] = not ui_state['show_weights']
+
             if event.type == pygame.MOUSEWHEEL and current_state == STATE_RUN:
-                graph_renderer.zoom *= 1.1 if event.y > 0 else 0.9
+                table_w = 240
+                if ui_state['show_table'] and mouse_pos[0] > screen.get_size()[0] - table_w:
+                    ui_state['scroll'] -= event.y 
+                    ui_state['scroll'] = max(0, min(ui_state['scroll'], len(sorted_edges) - 10))
+                else:
+                    graph_renderer.zoom *= 1.1 if event.y > 0 else 0.9
 
             if current_state == STATE_EDIT:
                 graph_editor.handle_event(event)
@@ -284,6 +339,7 @@ def main():
             frame_count += 1
             should_step = False
             batch_size = 1
+            should_force_update = False
             
             mst_target = len(parent) - 1
             if mst_edges_count < mst_target and current_edge_idx < len(sorted_edges):
@@ -304,8 +360,13 @@ def main():
                 graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
                 current_edge_idx += processed
                 mst_edges_count += added 
+                
+                if ui_state['show_table']:
+                     rows_visible = (screen.get_size()[1] - 50) // 25
+                     if current_edge_idx > ui_state['scroll'] + rows_visible - 2:
+                         ui_state['scroll'] = current_edge_idx - rows_visible + 2
 
-            if frame_count == 1 or frame_count % 10 == 0 or should_step:
+            if frame_count == 1 or frame_count % 10 == 0 or should_step or 'should_force_update' in locals():
                  roots = logic.get_all_roots(parent)
                  statuses = logic.get_node_statuses(parent, rank)
                  valid_roots = roots[:len(circle_renderer.colors)]
@@ -316,11 +377,9 @@ def main():
             pt_size = 5.0 if len(parent) > 2000 else 12.0
             circle_renderer.render(graph_renderer.current_matrix, point_size=pt_size)
             
-            # --- Draw UI ---
-            draw_ui(ui_surface, sorted_edges, current_edge_idx, mst_edges_count, 
+            ui_rects = draw_ui(ui_surface, sorted_edges, current_edge_idx, mst_edges_count, 
                     len(parent), speed_value, slider_rect, 
-                    graph_renderer.state_data,
-                    nodes, graph_renderer) # Pass nodes and renderer for projection
+                    graph_renderer.state_data, nodes, graph_renderer, ui_state)
             
             ui_renderer.update_texture(ui_surface)
             ui_renderer.render()

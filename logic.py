@@ -38,11 +38,6 @@ def get_all_roots(parent):
 
 @njit
 def get_node_statuses(parent, rank):
-    """
-    Returns array of 0.0 or 1.0.
-    Node is 'Selected' (1.0) if it is connected to something.
-    This means either it has a parent (parent[i] != i) OR it is a root with children (rank[i] > 0).
-    """
     status = np.zeros(len(parent), dtype=np.float32)
     for i in range(len(parent)):
         if parent[i] != i or rank[i] > 0:
@@ -51,6 +46,7 @@ def get_node_statuses(parent, rank):
 
 @njit
 def process_batch(sorted_edges, start_idx, batch_size, parent, rank, state_buffer):
+    """Normal processing: Updates DSU and writes colors to state_buffer."""
     processed_count = 0
     mst_added_count = 0
     limit = min(start_idx + batch_size, len(sorted_edges))
@@ -70,6 +66,21 @@ def process_batch(sorted_edges, start_idx, batch_size, parent, rank, state_buffe
         processed_count += 1
         
     return processed_count, mst_added_count
+
+@njit
+def fast_forward_dsu(sorted_edges, limit, parent, rank):
+    """
+    Time Machine Logic: Re-runs the algorithm from step 0 to 'limit'
+    purely to restore the 'parent' and 'rank' arrays. 
+    Does NOT update graphics.
+    """
+    mst_added_count = 0
+    for i in range(limit):
+        u, v, _ = sorted_edges[i]
+        is_merged, _ = union(parent, rank, int(u), int(v))
+        if is_merged:
+            mst_added_count += 1
+    return mst_added_count
 
 def prepare_data(n_vertices, n_edges):
     print(f"Generating Circular Data: {n_vertices} Vertices, {n_edges} Edges...")
