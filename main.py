@@ -11,8 +11,8 @@ SCREEN_SIZE = (1280, 720)
 STATE_EDIT = 0
 STATE_RUN = 1
 
-TEST_VERTICES = 100
-TEST_EDGES = 50
+TEST_VERTICES = 50
+TEST_EDGES = 100
 
 def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, slider_val, slider_rect, is_paused):
     surface.fill((0,0,0,0))
@@ -81,7 +81,6 @@ def main():
                 pygame.quit(); sys.exit()
 
             if event.type == pygame.VIDEORESIZE:
-                # Update viewport on resize
                 ctx.viewport = (0, 0, event.w, event.h)
                 if graph_renderer:
                     graph_renderer.aspect_ratio = event.w / event.h
@@ -93,25 +92,27 @@ def main():
                     pygame.display.set_caption("Edit Mode")
 
                 elif event.key == pygame.K_t and current_state == STATE_EDIT:
-                    # LIMIT TEST (CIRCULAR)
+                    # LIMIT TEST: Generate circular data
+                    # We MUST use aspect correction here, otherwise the circle looks like an oval
                     sorted_edges, sorted_geom, nodes = logic.prepare_data(TEST_VERTICES, TEST_EDGES)
                     n_vertices = len(nodes)
                     parent = np.arange(n_vertices)
                     rank = np.zeros(n_vertices, dtype=np.int32)
                     
-                    graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom)
-                    # Set Aspect Ratio
+                    # correct_aspect=True for Procedural Data
+                    graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom, correct_aspect=True)
                     w, h = screen.get_size()
                     graph_renderer.aspect_ratio = w / h
                     
                     circle_renderer = gui.CircleRenderer(ctx, nodes)
-                    circle_renderer.update_colors(np.arange(n_vertices, dtype=np.int32))
+                    circle_renderer.update_state(np.arange(n_vertices), np.zeros(n_vertices))
                     
                     current_edge_idx = 0; mst_edges_count = 0
-                    current_state = STATE_RUN; speed_value = 0.15
+                    current_state = STATE_RUN; speed_value = 0
 
                 elif event.key == pygame.K_RETURN and current_state == STATE_EDIT:
-                    # NORMAL RUN
+                    # NORMAL RUN: Data from Editor
+                    # We MUST NOT use aspect correction, because the Editor already stretched the coords
                     raw_edges, geom, nodes = graph_editor.export_data()
                     if raw_edges is not None and len(raw_edges) > 0:
                         sorted_indices = np.argsort(raw_edges[:, 2])
@@ -126,12 +127,13 @@ def main():
                         parent = np.arange(n_vertices)
                         rank = np.zeros(n_vertices, dtype=np.int32)
                         
-                        graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom)
+                        # correct_aspect=False for Editor Data
+                        graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom, correct_aspect=False)
                         w, h = screen.get_size()
                         graph_renderer.aspect_ratio = w / h
 
                         circle_renderer = gui.CircleRenderer(ctx, nodes)
-                        circle_renderer.update_colors(np.arange(len(nodes), dtype=np.int32))
+                        circle_renderer.update_state(np.arange(n_vertices), np.zeros(n_vertices))
                         
                         current_edge_idx = 0; mst_edges_count = 0
                         current_state = STATE_RUN; speed_value = 0.0
@@ -183,15 +185,19 @@ def main():
                 current_edge_idx += processed
                 mst_edges_count += added 
 
-            if frame_count % 10 == 0:
+            # Force first update or periodic update
+            if frame_count == 1 or frame_count % 10 == 0 or should_step:
                  roots = logic.get_all_roots(parent)
+                 statuses = logic.get_node_statuses(parent, rank)
+                 
                  valid_roots = roots[:len(circle_renderer.colors)]
-                 circle_renderer.update_colors(valid_roots)
+                 valid_stats = statuses[:len(circle_renderer.colors)]
+                 
+                 circle_renderer.update_state(valid_roots, valid_stats)
 
             graph_renderer.render()
             
-            # Dynamic Point Size: Small if many nodes, big if few
-            pt_size = 4.0 if len(parent) > 2000 else 12.0
+            pt_size = 5.0 if len(parent) > 2000 else 12.0
             circle_renderer.render(graph_renderer.current_matrix, point_size=pt_size)
             
             draw_ui(ui_surface, sorted_edges, current_edge_idx, mst_edges_count, len(parent), speed_value, slider_rect, is_paused)

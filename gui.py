@@ -47,24 +47,34 @@ class TextureRenderer:
         self.ctx.disable(moderngl.BLEND)
 
 class CircleRenderer:
-    """Draws colored vertices with dynamic size."""
+    """Draws vertices with dynamic colors and sizes."""
     def __init__(self, ctx, vertices):
         self.ctx = ctx
         self.n_verts = len(vertices)
+        
+        self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
         
         self.prog = self.ctx.program(
             vertex_shader='''
                 #version 330
                 in vec2 in_vert;
                 in vec3 in_color;
+                in float in_status; // 0.0 = Unselected, 1.0 = Selected
                 out vec3 v_color;
+                
                 uniform mat4 u_transform;
-                uniform float u_point_size; // Added Uniform
+                uniform float u_base_size;
                 
                 void main() {
-                    v_color = in_color;
                     gl_Position = u_transform * vec4(in_vert, 0.0, 1.0);
-                    gl_PointSize = u_point_size; 
+                    
+                    if (in_status > 0.5) {
+                        gl_PointSize = u_base_size * 1.5; 
+                        v_color = in_color;
+                    } else {
+                        gl_PointSize = u_base_size * 0.6;
+                        v_color = vec3(0.0, 0.5, 1.0); 
+                    }
                 }
             ''',
             fragment_shader='''
@@ -79,34 +89,40 @@ class CircleRenderer:
             '''
         )
         self.vbo = self.ctx.buffer(vertices.astype('f4').tobytes())
-        
-        # Default Colors (White)
-        self.colors = np.ones((self.n_verts, 3), dtype='f4')
+        self.colors = np.zeros((self.n_verts, 3), dtype='f4')
         self.color_vbo = self.ctx.buffer(self.colors.tobytes(), dynamic=True)
+        self.status = np.zeros(self.n_verts, dtype='f4')
+        self.status_vbo = self.ctx.buffer(self.status.tobytes(), dynamic=True)
         
         self.vao = self.ctx.vertex_array(self.prog, [
             (self.vbo, '2f', 'in_vert'),
-            (self.color_vbo, '3f', 'in_color')
+            (self.color_vbo, '3f', 'in_color'),
+            (self.status_vbo, '1f', 'in_status')
         ])
 
-    def update_colors(self, roots):
-        np.random.seed(42) 
-        palette = np.random.uniform(0.2, 0.9, (len(roots), 3)).astype('f4')
-        new_colors = palette[roots]
-        self.color_vbo.write(new_colors.tobytes())
+        np.random.seed(999) 
+        self.palette = np.random.uniform(0.2, 1.0, (self.n_verts + 1, 3)).astype('f4')
 
-    def render(self, transform_matrix, point_size=10.0):
+    def update_state(self, roots, statuses):
+        new_colors = self.palette[roots]
+        self.color_vbo.write(new_colors.tobytes())
+        self.status_vbo.write(statuses.astype('f4').tobytes())
+
+    def render(self, transform_matrix, point_size=12.0):
+        self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
+        self.ctx.enable(moderngl.BLEND)
         self.prog['u_transform'].write(transform_matrix)
-        self.prog['u_point_size'].value = point_size
+        self.prog['u_base_size'].value = point_size
         self.vao.render(moderngl.POINTS)
 
 class GraphRenderer:
-    def __init__(self, ctx, n_edges, line_geometry):
+    def __init__(self, ctx, n_edges, line_geometry, correct_aspect=False):
         self.ctx = ctx
         self.n_edges = n_edges
         self.zoom = 1.0
         self.offset = np.array([0.0, 0.0], dtype='f4')
-        self.aspect_ratio = 1.0 # New
+        self.aspect_ratio = 1.0
+        self.correct_aspect = correct_aspect # Store this setting
         
         self.prog = self.ctx.program(
             vertex_shader='''
@@ -147,15 +163,17 @@ class GraphRenderer:
         self.current_matrix = None
 
     def update_camera(self):
-        # 1. Translation
         trans = Matrix44.from_translation([self.offset[0], self.offset[1], 0.0], dtype='f4')
         
-        # 2. Scale (Zoom) - Correct for Aspect Ratio here
-        # If aspect > 1 (wide), we shrink X to keep circles circular
-        if self.aspect_ratio > 1.0:
+        # Only apply aspect ratio correction if requested (for Limit Test)
+        # For Editor data, we treat the screen as 1:1 to match pixel drawing
+        if self.correct_aspect and self.aspect_ratio > 1.0:
             scale = Matrix44.from_scale([self.zoom / self.aspect_ratio, self.zoom, 1.0], dtype='f4')
-        else:
+        elif self.correct_aspect:
             scale = Matrix44.from_scale([self.zoom, self.zoom * self.aspect_ratio, 1.0], dtype='f4')
+        else:
+            # NO CORRECTION (Match Editor)
+            scale = Matrix44.from_scale([self.zoom, self.zoom, 1.0], dtype='f4')
             
         self.current_matrix = (trans * scale).astype('f4').tobytes()
         self.prog['u_transform'].write(self.current_matrix)

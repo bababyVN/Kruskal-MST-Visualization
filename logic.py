@@ -37,15 +37,20 @@ def get_all_roots(parent):
     return roots
 
 @njit
-def process_single_edge(u, v, parent, rank):
-    is_merged, new_root = union(parent, rank, int(u), int(v))
-    return (2 if is_merged else 1), new_root
+def get_node_statuses(parent, rank):
+    """
+    Returns array of 0.0 or 1.0.
+    Node is 'Selected' (1.0) if it is connected to something.
+    This means either it has a parent (parent[i] != i) OR it is a root with children (rank[i] > 0).
+    """
+    status = np.zeros(len(parent), dtype=np.float32)
+    for i in range(len(parent)):
+        if parent[i] != i or rank[i] > 0:
+            status[i] = 1.0
+    return status
 
 @njit
 def process_batch(sorted_edges, start_idx, batch_size, parent, rank, state_buffer):
-    """
-    Returns: (edges_processed, edges_added_to_mst)
-    """
     processed_count = 0
     mst_added_count = 0
     limit = min(start_idx + batch_size, len(sorted_edges))
@@ -69,22 +74,16 @@ def process_batch(sorted_edges, start_idx, batch_size, parent, rank, state_buffe
 def prepare_data(n_vertices, n_edges):
     print(f"Generating Circular Data: {n_vertices} Vertices, {n_edges} Edges...")
     
-    # --- CIRCULAR GENERATION (Polar Coordinates) ---
-    # 1. Random Radius (sqrt for uniform distribution) and Angle
     radius = np.sqrt(np.random.uniform(0, 1, n_vertices)) * 0.9
     angle = np.random.uniform(0, 2 * np.pi, n_vertices)
-    
-    # 2. Convert to Cartesian
     x = radius * np.cos(angle)
     y = radius * np.sin(angle)
     vertices = np.column_stack((x, y)).astype('f4')
     
-    # 3. Random Edges
     u = np.random.randint(0, n_vertices, n_edges)
     v = np.random.randint(0, n_vertices, n_edges)
     weights = np.random.uniform(1, 100, n_edges)
     
-    # Remove self-loops
     mask = u != v
     u, v, weights = u[mask], v[mask], weights[mask]
     edges = np.column_stack((u, v, weights))
