@@ -11,24 +11,36 @@ SCREEN_SIZE = (1280, 720)
 STATE_EDIT = 0
 STATE_RUN = 1
 
-def draw_slider(surface, value, rect):
-    """Draws a simple slider on a Pygame surface."""
-    # Background
-    pygame.draw.rect(surface, (50, 50, 50), rect)
-    pygame.draw.rect(surface, (200, 200, 200), rect, 2)
+TEST_VERTICES = 100
+TEST_EDGES = 50
+
+def draw_ui(surface, sorted_edges, current_idx, edges_in_mst, total_vertices, slider_val, slider_rect, is_paused):
+    surface.fill((0,0,0,0))
+    pygame.draw.rect(surface, (40, 40, 40), slider_rect)
+    pygame.draw.rect(surface, (200, 200, 200), slider_rect, 2)
+    fill_width = int(slider_rect.width * slider_val)
+    pygame.draw.rect(surface, (0, 200, 100), (slider_rect.x, slider_rect.y, fill_width, slider_rect.height))
     
-    # Fill
-    fill_width = int(rect.width * value)
-    fill_rect = pygame.Rect(rect.x, rect.y, fill_width, rect.height)
-    pygame.draw.rect(surface, (0, 200, 100), fill_rect)
-    
-    # Label
     font = pygame.font.SysFont("Arial", 14)
-    text = font.render(f"Speed: {int(value * 100)}%", True, (255, 255, 255))
-    surface.blit(text, (rect.x + 5, rect.y + 5))
+    speed_text = "Step-by-Step" if slider_val < 0.05 else f"Auto Speed: {int(slider_val*100)}%"
+    surface.blit(font.render(speed_text, True, (255,255,255)), (slider_rect.x, slider_rect.y - 20))
+
+    status_font = pygame.font.SysFont("Consolas", 18)
+    target = total_vertices - 1
+    status_txt = f"MST Edges: {edges_in_mst} / {target}"
+    
+    if edges_in_mst >= target:
+        status_txt += " [COMPLETE]"
+        col = (0, 255, 0)
+    elif current_idx >= len(sorted_edges):
+        status_txt += " [FAILED]"
+        col = (255, 0, 0)
+    else:
+        col = (255, 255, 0)
+        
+    surface.blit(status_font.render(status_txt, True, col), (20, 20))
 
 def main():
-    # 1. Init OpenGL Window
     pygame.init()
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)
     pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MINOR_VERSION, 3)
@@ -37,52 +49,71 @@ def main():
     pygame.display.set_caption("Kruskal Sandbox")
 
     ctx = moderngl.create_context()
-
-    # 2. Components
+    
     graph_editor = editor.GraphEditor(*SCREEN_SIZE)
     ui_renderer = gui.TextureRenderer(ctx) 
     
-    # Simulation components (created on Run)
     graph_renderer = None
     circle_renderer = None
     
-    # Logic State
     current_state = STATE_EDIT
     sorted_edges = []
     parent = []
     rank = []
-    current_edge_idx = 0
-    paused = False
     
-    # UI State
-    speed_value = 0.05 # 0.0 to 1.0
+    current_edge_idx = 0
+    mst_edges_count = 0
+    speed_value = 0.0
     slider_rect = pygame.Rect(20, SCREEN_SIZE[1] - 50, 200, 30)
     ui_surface = pygame.Surface(SCREEN_SIZE, pygame.SRCALPHA)
     
     clock = pygame.time.Clock()
+    is_paused = True
+    frame_count = 0
 
     while True:
-        # --- INPUT ---
         events = pygame.event.get()
         mouse_pos = pygame.mouse.get_pos()
         mouse_buttons = pygame.mouse.get_pressed()
-
+        
         for event in events:
             if event.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
 
+            if event.type == pygame.VIDEORESIZE:
+                # Update viewport on resize
+                ctx.viewport = (0, 0, event.w, event.h)
+                if graph_renderer:
+                    graph_renderer.aspect_ratio = event.w / event.h
+
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r: # RESET
+                if event.key == pygame.K_r: 
                     current_state = STATE_EDIT
-                    graph_renderer = None
-                    circle_renderer = None
-                    pygame.display.set_caption("Edit Mode - [L]oad | [Enter] Run | [Right Click] Edit Weight")
+                    graph_renderer = None; circle_renderer = None
+                    pygame.display.set_caption("Edit Mode")
+
+                elif event.key == pygame.K_t and current_state == STATE_EDIT:
+                    # LIMIT TEST (CIRCULAR)
+                    sorted_edges, sorted_geom, nodes = logic.prepare_data(TEST_VERTICES, TEST_EDGES)
+                    n_vertices = len(nodes)
+                    parent = np.arange(n_vertices)
+                    rank = np.zeros(n_vertices, dtype=np.int32)
+                    
+                    graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom)
+                    # Set Aspect Ratio
+                    w, h = screen.get_size()
+                    graph_renderer.aspect_ratio = w / h
+                    
+                    circle_renderer = gui.CircleRenderer(ctx, nodes)
+                    circle_renderer.update_colors(np.arange(n_vertices, dtype=np.int32))
+                    
+                    current_edge_idx = 0; mst_edges_count = 0
+                    current_state = STATE_RUN; speed_value = 0.15
 
                 elif event.key == pygame.K_RETURN and current_state == STATE_EDIT:
-                    # SWITCH TO RUN
+                    # NORMAL RUN
                     raw_edges, geom, nodes = graph_editor.export_data()
                     if raw_edges is not None and len(raw_edges) > 0:
-                        # Logic Init
                         sorted_indices = np.argsort(raw_edges[:, 2])
                         sorted_edges = raw_edges[sorted_indices]
                         
@@ -92,40 +123,35 @@ def main():
                             sorted_geom[new_i*2+1] = geom[old_i*2+1]
 
                         n_vertices = int(np.max(sorted_edges[:, :2])) + 1
-                        parent = np.arange(n_vertices + 1)
-                        rank = np.zeros(n_vertices + 1, dtype=np.int32)
+                        parent = np.arange(n_vertices)
+                        rank = np.zeros(n_vertices, dtype=np.int32)
                         
-                        # Renderers Init
                         graph_renderer = gui.GraphRenderer(ctx, len(sorted_edges), sorted_geom)
+                        w, h = screen.get_size()
+                        graph_renderer.aspect_ratio = w / h
+
                         circle_renderer = gui.CircleRenderer(ctx, nodes)
+                        circle_renderer.update_colors(np.arange(len(nodes), dtype=np.int32))
                         
-                        current_edge_idx = 0
-                        current_state = STATE_RUN
-                        pygame.display.set_caption("Simulation Mode - [Space] Pause | [R] Reset")
+                        current_edge_idx = 0; mst_edges_count = 0
+                        current_state = STATE_RUN; speed_value = 0.0
+                    else:
+                        print("Empty Graph")
 
-                elif event.key == pygame.K_l and current_state == STATE_EDIT:
-                    graph_editor.load_from_file()
-
-                elif event.key == pygame.K_SPACE and current_state == STATE_RUN:
-                    paused = not paused
+                elif event.key == pygame.K_RIGHT and current_state == STATE_RUN:
+                    is_paused = False # Step manual
                     
             if event.type == pygame.MOUSEWHEEL and current_state == STATE_RUN:
                 graph_renderer.zoom *= 1.1 if event.y > 0 else 0.9
 
-            # Editor Input
             if current_state == STATE_EDIT:
                 graph_editor.handle_event(event)
 
-        # Slider Input (Always check if in Run mode)
-        if current_state == STATE_RUN:
-            if mouse_buttons[0]: # Left click held
-                if slider_rect.collidepoint(mouse_pos):
-                    # Update slider value
-                    rel_x = mouse_pos[0] - slider_rect.x
-                    speed_value = max(0.001, min(1.0, rel_x / slider_rect.width))
+        if current_state == STATE_RUN and mouse_buttons[0]:
+            if slider_rect.collidepoint(mouse_pos):
+                speed_value = max(0.0, min(1.0, (mouse_pos[0] - slider_rect.x) / slider_rect.width))
 
-        # --- DRAWING ---
-        ctx.clear(0.1, 0.1, 0.1)
+        ctx.clear(0.05, 0.05, 0.05)
 
         if current_state == STATE_EDIT:
             surface = graph_editor.draw()
@@ -133,35 +159,42 @@ def main():
             ui_renderer.render()
 
         elif current_state == STATE_RUN:
-            # 1. Calculate Speed
-            # Min: 1 edge/frame, Max: 5000 edges/frame
-            batch_size = int(1 + (speed_value * 100)**2) 
+            frame_count += 1
+            should_step = False
+            batch_size = 1
             
-            # 2. Logic Step
-            if not paused and current_edge_idx < len(sorted_edges):
-                processed = logic.process_batch(
+            mst_target = len(parent) - 1
+            if mst_edges_count < mst_target and current_edge_idx < len(sorted_edges):
+                if speed_value < 0.05:
+                    if not is_paused:
+                        should_step = True; is_paused = True
+                else:
+                    batch_size = int(1 + (speed_value * 50)**3) 
+                    should_step = True
+
+            if should_step:
+                processed, added = logic.process_batch(
                     sorted_edges, current_edge_idx, batch_size, 
                     parent, rank, graph_renderer.state_data
                 )
-                graph_renderer.update_states(
-                    current_edge_idx, processed, 
-                    graph_renderer.state_data[current_edge_idx*2 : (current_edge_idx+processed)*2]
-                )
+                start_byte = current_edge_idx * 2 * 4
+                data_slice = graph_renderer.state_data[current_edge_idx*2 : (current_edge_idx+processed)*2]
+                graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
                 current_edge_idx += processed
+                mst_edges_count += added 
 
-            # 3. Render Graph & Nodes
-            graph_renderer.render() # Updates camera matrix
-            circle_renderer.render(graph_renderer.current_matrix) # Uses same matrix
+            if frame_count % 10 == 0:
+                 roots = logic.get_all_roots(parent)
+                 valid_roots = roots[:len(circle_renderer.colors)]
+                 circle_renderer.update_colors(valid_roots)
+
+            graph_renderer.render()
             
-            # 4. Render UI (Slider)
-            ui_surface.fill((0,0,0,0))
-            draw_slider(ui_surface, speed_value, slider_rect)
+            # Dynamic Point Size: Small if many nodes, big if few
+            pt_size = 4.0 if len(parent) > 2000 else 12.0
+            circle_renderer.render(graph_renderer.current_matrix, point_size=pt_size)
             
-            # Draw Progress Text
-            font = pygame.font.SysFont("Arial", 20)
-            txt = font.render(f"Edges: {current_edge_idx} / {len(sorted_edges)}", True, (255, 255, 0))
-            ui_surface.blit(txt, (20, 20))
-            
+            draw_ui(ui_surface, sorted_edges, current_edge_idx, mst_edges_count, len(parent), speed_value, slider_rect, is_paused)
             ui_renderer.update_texture(ui_surface)
             ui_renderer.render()
 

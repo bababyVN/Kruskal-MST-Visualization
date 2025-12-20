@@ -4,7 +4,7 @@ from pyrr import Matrix44
 import pygame
 
 class TextureRenderer:
-    """Renders 2D UI (Editor & Sliders) on top of the 3D world."""
+    """Renders the UI Surface (Table/Sliders) overlay."""
     def __init__(self, ctx):
         self.ctx = ctx
         self.prog = self.ctx.program(
@@ -47,7 +47,7 @@ class TextureRenderer:
         self.ctx.disable(moderngl.BLEND)
 
 class CircleRenderer:
-    """Draws the vertices (nodes) as circles in Simulation Mode."""
+    """Draws colored vertices with dynamic size."""
     def __init__(self, ctx, vertices):
         self.ctx = ctx
         self.n_verts = len(vertices)
@@ -56,36 +56,57 @@ class CircleRenderer:
             vertex_shader='''
                 #version 330
                 in vec2 in_vert;
+                in vec3 in_color;
+                out vec3 v_color;
                 uniform mat4 u_transform;
+                uniform float u_point_size; // Added Uniform
+                
                 void main() {
+                    v_color = in_color;
                     gl_Position = u_transform * vec4(in_vert, 0.0, 1.0);
-                    gl_PointSize = 10.0; // Fixed size dots
+                    gl_PointSize = u_point_size; 
                 }
             ''',
             fragment_shader='''
                 #version 330
+                in vec3 v_color;
                 out vec4 f_color;
                 void main() {
                     vec2 circ = 2.0 * gl_PointCoord - 1.0;
-                    if (dot(circ, circ) > 1.0) discard; // Make it round
-                    f_color = vec4(0.2, 0.6, 1.0, 1.0); // Blue Nodes
+                    if (dot(circ, circ) > 1.0) discard; 
+                    f_color = vec4(v_color, 1.0);
                 }
             '''
         )
         self.vbo = self.ctx.buffer(vertices.astype('f4').tobytes())
-        self.vao = self.ctx.simple_vertex_array(self.prog, self.vbo, 'in_vert')
+        
+        # Default Colors (White)
+        self.colors = np.ones((self.n_verts, 3), dtype='f4')
+        self.color_vbo = self.ctx.buffer(self.colors.tobytes(), dynamic=True)
+        
+        self.vao = self.ctx.vertex_array(self.prog, [
+            (self.vbo, '2f', 'in_vert'),
+            (self.color_vbo, '3f', 'in_color')
+        ])
 
-    def render(self, transform_matrix):
+    def update_colors(self, roots):
+        np.random.seed(42) 
+        palette = np.random.uniform(0.2, 0.9, (len(roots), 3)).astype('f4')
+        new_colors = palette[roots]
+        self.color_vbo.write(new_colors.tobytes())
+
+    def render(self, transform_matrix, point_size=10.0):
         self.prog['u_transform'].write(transform_matrix)
+        self.prog['u_point_size'].value = point_size
         self.vao.render(moderngl.POINTS)
 
 class GraphRenderer:
-    """Draws the edges (lines)."""
     def __init__(self, ctx, n_edges, line_geometry):
         self.ctx = ctx
         self.n_edges = n_edges
         self.zoom = 1.0
         self.offset = np.array([0.0, 0.0], dtype='f4')
+        self.aspect_ratio = 1.0 # New
         
         self.prog = self.ctx.program(
             vertex_shader='''
@@ -104,9 +125,15 @@ class GraphRenderer:
                 in float v_state;
                 out vec4 f_color;
                 void main() {
-                    if (v_state > 1.9) f_color = vec4(0.0, 1.0, 0.0, 1.0);       // MST Green
-                    else if (v_state > 0.9) f_color = vec4(1.0, 0.0, 0.0, 0.15); // Rejected Red
-                    else f_color = vec4(0.5, 0.5, 0.5, 0.1);                     // Unseen Grey
+                    if (v_state > 2.9) {
+                        f_color = vec4(0.0, 1.0, 0.2, 1.0); // Selecting
+                    } else if (v_state > 1.9) {
+                        f_color = vec4(1.0, 0.8, 0.0, 1.0); // MST
+                    } else if (v_state > 0.9) {
+                        discard; // Rejected
+                    } else {
+                        f_color = vec4(0.3, 0.3, 0.3, 0.2); // Unseen
+                    }
                 }
             '''
         )
@@ -117,11 +144,19 @@ class GraphRenderer:
             (self.vbo, '2f', 'in_vert'),
             (self.state_vbo, '1f', 'in_state')
         ])
-        self.current_matrix = None # Store for CircleRenderer to use
+        self.current_matrix = None
 
     def update_camera(self):
+        # 1. Translation
         trans = Matrix44.from_translation([self.offset[0], self.offset[1], 0.0], dtype='f4')
-        scale = Matrix44.from_scale([self.zoom, self.zoom, 1.0], dtype='f4')
+        
+        # 2. Scale (Zoom) - Correct for Aspect Ratio here
+        # If aspect > 1 (wide), we shrink X to keep circles circular
+        if self.aspect_ratio > 1.0:
+            scale = Matrix44.from_scale([self.zoom / self.aspect_ratio, self.zoom, 1.0], dtype='f4')
+        else:
+            scale = Matrix44.from_scale([self.zoom, self.zoom * self.aspect_ratio, 1.0], dtype='f4')
+            
         self.current_matrix = (trans * scale).astype('f4').tobytes()
         self.prog['u_transform'].write(self.current_matrix)
 
