@@ -11,8 +11,13 @@ SCREEN_SIZE = (1280, 720)
 STATE_EDIT = 0
 STATE_RUN = 1
 
-TEST_VERTICES = 5000 
-TEST_EDGES = 25000
+TEST_SPEED = 1
+TEST_VERTICES = 1000000
+TEST_EDGES = 10000000
+TEST_P_Connected = np.exp(
+    -np.exp(np.log(TEST_VERTICES) - 2 * TEST_EDGES / TEST_VERTICES)
+)
+print("Prob of connected graph:",TEST_P_Connected)
 
 def project_point(point, width, height, offset, zoom, aspect_ratio, correct_aspect):
     x, y = point[0], point[1]
@@ -251,7 +256,7 @@ def main():
                     circle_renderer.update_state(np.arange(n_vertices), np.zeros(n_vertices))
                     
                     current_edge_idx = 0; mst_edges_count = 0
-                    current_state = STATE_RUN; speed_value = 0.15
+                    current_state = STATE_RUN; speed_value = TEST_SPEED
                     ui_state['show_ids'] = False # Disable for massive graph
                     ui_state['show_weights'] = False
 
