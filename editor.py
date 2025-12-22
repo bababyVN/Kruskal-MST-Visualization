@@ -240,7 +240,6 @@ class GraphEditor:
         elif self.btn_load.collidepoint(pos): self._load_graph(); self.show_save_menu = False
         elif self.btn_gen.collidepoint(pos): self._prompt_random_graph()
 
-    # --- UPDATED: Generation Logic with Choice ---
     def _prompt_random_graph(self):
         try:
             n = simpledialog.askinteger("Random Graph", "Number of Nodes (N):", parent=self.root, minvalue=2, maxvalue=5000, initialvalue=20)
@@ -249,7 +248,6 @@ class GraphEditor:
             m = simpledialog.askinteger("Random Graph", f"Number of Edges (M) [Max {max_edges}]:", parent=self.root, minvalue=1, maxvalue=max_edges, initialvalue=30)
             if not m: return
             
-            # ASK FOR LAYOUT
             use_random = messagebox.askyesno(
                 "Layout Generation", 
                 "Generate with RANDOM positions?\n\n(Click 'No' for Circular/Topo Layout)"
@@ -264,7 +262,6 @@ class GraphEditor:
         self.nodes = []
         self.edges = []
         
-        # 1. Generate Nodes based on layout choice
         if use_random:
             area_scale = math.sqrt(n) * 50
             center_x, center_y = 0, 0
@@ -273,7 +270,6 @@ class GraphEditor:
                 y = np.random.uniform(center_y - area_scale, center_y + area_scale)
                 self.nodes.append({'pos': np.array([x, y], dtype='f4'), 'label': str(i)})
         else:
-            # Circular Layout
             radius = max(200, math.sqrt(n) * 100)
             for i in range(n):
                 angle = (2 * math.pi * i) / n
@@ -410,7 +406,9 @@ class GraphEditor:
                 pygame.draw.circle(self.surface, fill, pos, 14)
                 pygame.draw.circle(self.surface, COLOR_WHITE, pos, 14, 2)
         
-        if len(self.nodes) > TEXT_RENDER_THRESHOLD:
+        # --- TEXT RENDERING WITH CULLING ---
+        # UPDATED: Checks BOTH vertices AND edges count against threshold
+        if len(self.nodes) > TEXT_RENDER_THRESHOLD or len(self.edges) > TEXT_RENDER_THRESHOLD:
             if self.show_ids or self.show_weights:
                 warn_text = "Graph is too big - ID and Weight rendering disabled"
                 lbl = self.bold_font.render(warn_text, True, (255, 80, 80))

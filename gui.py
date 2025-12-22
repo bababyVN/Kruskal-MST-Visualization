@@ -283,8 +283,8 @@ class RuntimeOverlay:
         renderer = context_data['renderer']
         
         # --- 1. LABELS WITH THRESHOLD CHECK ---
-        # UPDATED: Use the config constant instead of hardcoded 500
-        if context_data['total_vertices'] < TEXT_RENDER_THRESHOLD:
+        # UPDATED: Checks BOTH vertices AND edges count against threshold
+        if context_data['total_vertices'] < TEXT_RENDER_THRESHOLD and len(edges) < TEXT_RENDER_THRESHOLD:
             if self.settings['show_weights']:
                 for i, (u, v, weight) in enumerate(edges):
                     should_draw = True
@@ -315,7 +315,6 @@ class RuntimeOverlay:
                         surface.blit(txt, rect)
         
         # --- SHOW WARNING IF GRAPH TOO BIG ---
-        # UPDATED: Display warning box if user tries to enable labels on large graph
         else:
             if self.settings['show_ids'] or self.settings['show_weights']:
                 warn_text = "Graph is too big - ID and Weight rendering disabled"
