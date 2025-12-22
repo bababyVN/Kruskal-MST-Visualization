@@ -82,6 +82,37 @@ class GraphEditor:
     def world_to_screen(self, pos):
         return (np.array(pos, dtype='f4') * self.zoom) + self.offset
 
+    # --- NEW: Auto-Fit Camera ---
+    def fit_to_screen(self):
+        """Resets camera to fit all nodes on screen."""
+        if not self.nodes:
+            self.offset = np.array([self.width/2, self.height/2], dtype='f4')
+            self.zoom = 1.0
+            return
+
+        # Find bounds
+        min_x = min(n['pos'][0] for n in self.nodes)
+        max_x = max(n['pos'][0] for n in self.nodes)
+        min_y = min(n['pos'][1] for n in self.nodes)
+        max_y = max(n['pos'][1] for n in self.nodes)
+        
+        # Add padding
+        pad = 100
+        content_w = max_x - min_x + pad * 2
+        content_h = max_y - min_y + pad * 2
+        
+        if content_w <= 0 or content_h <= 0: return
+
+        # Calculate zoom
+        zoom_x = self.width / content_w
+        zoom_y = self.height / content_h
+        target_zoom = min(zoom_x, zoom_y)
+        self.zoom = min(1.0, max(0.01, target_zoom)) # Clamp zoom
+        
+        # Center point
+        center_world = np.array([(min_x + max_x)/2, (min_y + max_y)/2], dtype='f4')
+        self.offset = np.array([self.width/2, self.height/2], dtype='f4') - center_world * self.zoom
+
     # --- INPUT ---
     def handle_event(self, event):
         m_pos = pygame.mouse.get_pos()
@@ -94,6 +125,7 @@ class GraphEditor:
         
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
+                # Menu Logic
                 if self.show_save_menu:
                     if self.btn_save_xy.collidepoint(m_pos):
                         self._save_graph(with_coords=True); self.show_save_menu = False; return
@@ -105,6 +137,7 @@ class GraphEditor:
                 if m_pos[1] < self.toolbar_h:
                     self._handle_toolbar_click(m_pos); return
                 
+                # Inspector
                 if self.selection:
                     insp_rect = pygame.Rect(20, self.height - 120, 200, 100)
                     if insp_rect.collidepoint(m_pos):
@@ -297,6 +330,7 @@ class GraphEditor:
         self.selection = None
         self.dirty = True 
         print("Graph generation complete.")
+        self.fit_to_screen() # Auto-fit camera
 
     def _save_graph(self, with_coords):
         filename = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text Files", "*.txt")])
@@ -382,6 +416,7 @@ class GraphEditor:
             self.selection = None
             self.dirty = True
             print(f"Loaded {len(self.nodes)} nodes, {len(self.edges)} edges.")
+            self.fit_to_screen() # Auto-fit camera
         except Exception as e: print(e)
 
     def draw(self, draw_graph=True):
@@ -406,8 +441,6 @@ class GraphEditor:
                 pygame.draw.circle(self.surface, fill, pos, 14)
                 pygame.draw.circle(self.surface, COLOR_WHITE, pos, 14, 2)
         
-        # --- TEXT RENDERING WITH CULLING ---
-        # UPDATED: Checks BOTH vertices AND edges count against threshold
         if len(self.nodes) > TEXT_RENDER_THRESHOLD or len(self.edges) > TEXT_RENDER_THRESHOLD:
             if self.show_ids or self.show_weights:
                 warn_text = "Graph is too big - ID and Weight rendering disabled"
@@ -475,7 +508,7 @@ class GraphEditor:
 
         hover = self.btn_run.collidepoint(pygame.mouse.get_pos())
         pygame.draw.rect(self.surface, (0, 200, 100) if hover else (0, 160, 80), self.btn_run, border_radius=4)
-        run_lbl = self.bold_font.render("RUN", True, COLOR_WHITE)
+        run_lbl = self.bold_font.render("RUN ▶", True, COLOR_WHITE)
         self.surface.blit(run_lbl, run_lbl.get_rect(center=self.btn_run.center))
 
     def _draw_btn(self, rect, text, state):

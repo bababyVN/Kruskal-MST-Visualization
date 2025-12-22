@@ -53,6 +53,9 @@ class KruskalApp:
         self.run_offset = np.array([0.0, 0.0], dtype='f4')
         self.is_panning = False
         self.pan_start = np.array([0,0], dtype='f4')
+        
+        # Key Repeat Control
+        self.next_step_time = 0
 
     def switch_to_run(self, limit_test=False):
         # 1. Sync Camera: Editor -> Simulation
@@ -113,6 +116,7 @@ class KruskalApp:
         self.current_edge_idx = 0
         self.mst_edges_count = 0
         self.current_state = STATE_RUN
+        self.is_paused = True # Start paused
 
     def switch_to_edit(self):
         """Switches back to Editor mode and preserves camera state."""
@@ -123,10 +127,92 @@ class KruskalApp:
         # 2. Switch State
         self.current_state = STATE_EDIT
 
+    def _update_table_scroll(self):
+        """Auto-scrolls the table to keep the current_edge_idx in view."""
+        if not self.run_overlay.settings['show_table']: return
+        
+        rows_visible = (self.screen.get_size()[1] - 50) // 25
+        scroll = self.run_overlay.settings['scroll']
+        idx = self.current_edge_idx
+        
+        if idx >= scroll + rows_visible - 2:
+            self.run_overlay.settings['scroll'] = idx - rows_visible + 3
+        elif idx < scroll:
+            self.run_overlay.settings['scroll'] = max(0, idx - 1)
+
+    def jump_to_step(self, target_idx):
+        """Instantly resets and fast-forwards the simulation to target_idx."""
+        if target_idx < 0: target_idx = 0
+        if target_idx > len(self.sorted_edges): target_idx = len(self.sorted_edges)
+        
+        self.current_edge_idx = 0
+        self.mst_edges_count = 0
+        self.mst_total_weight = 0.0
+        self.parent = np.arange(len(self.nodes))
+        self.rank = np.zeros(len(self.nodes), dtype=np.int32)
+        
+        self.graph_renderer.state_data[:] = 0.0
+        
+        if target_idx > 0:
+            processed, added, w_added = logic.process_batch(
+                self.sorted_edges, 
+                0, 
+                target_idx, 
+                self.parent, 
+                self.rank, 
+                self.graph_renderer.state_data,
+                0, 
+                len(self.nodes) - 1
+            )
+            self.current_edge_idx = processed
+            self.mst_edges_count = added
+            self.mst_total_weight = w_added
+
+        self.graph_renderer.state_vbo.write(self.graph_renderer.state_data.tobytes())
+        self.force_vis_update = True
+        self.is_paused = True
+        
+        self._update_table_scroll()
+
+    def _manual_step_forward(self, count=None):
+        if self.mst_edges_count >= len(self.nodes) - 1:
+            return 
+
+        if self.current_edge_idx < len(self.sorted_edges):
+            if count is not None:
+                step_size = count
+            else:
+                step_size = 1 if len(self.sorted_edges) < 1000 else 5
+                
+            processed, added, w_added = logic.process_batch(
+                self.sorted_edges, self.current_edge_idx, step_size, 
+                self.parent, self.rank, self.graph_renderer.state_data,
+                self.mst_edges_count, 
+                len(self.nodes) - 1
+            )
+            start_byte = self.current_edge_idx * 2 * 4
+            data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
+            self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
+            self.current_edge_idx += processed
+            self.mst_edges_count += added
+            self.mst_total_weight += w_added
+            self.force_vis_update = True
+            
+            self._update_table_scroll()
+
+    def _toggle_play_pause(self):
+        """Toggles play state. Sets speed to 5% if unpausing from 0%."""
+        self.is_paused = not self.is_paused
+        if not self.is_paused:
+            if self.speed_value < 0.05:
+                self.speed_value = 0.05
+
     def handle_events(self):
         events = pygame.event.get()
         mouse_pos = pygame.mouse.get_pos()
         mouse_buttons = pygame.mouse.get_pressed()
+        keys = pygame.key.get_pressed() 
+        current_time = pygame.time.get_ticks()
         
         for event in events:
             if event.type == pygame.QUIT:
@@ -151,17 +237,50 @@ class KruskalApp:
                 self.graph_editor.handle_event(event)
 
             elif self.current_state == STATE_RUN:
-                if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_r: self.switch_to_edit()
+                    
+                    # PLAY / PAUSE Toggle
+                    elif event.key == pygame.K_SPACE:
+                        self._toggle_play_pause()
+
+                    elif event.key == pygame.K_RIGHT:
+                        self.is_paused = True
+                        self._manual_step_forward(count=1) 
+                        self.next_step_time = current_time + 500 
+                    
+                    elif event.key == pygame.K_LEFT:
+                        self.is_paused = True
+                        step_size = 1 if len(self.sorted_edges) < 1000 else 5
+                        self.jump_to_step(self.current_edge_idx - 1)
+                        self.next_step_time = current_time + 500
+
+                elif event.type == pygame.MOUSEBUTTONDOWN:
                     clicked_ui = False
                     if self.run_overlay.slider_rect.collidepoint(event.pos): clicked_ui = True
                     for r in self.run_overlay.interactive_rects.values():
                         if r.collidepoint(event.pos): clicked_ui = True
+                    
+                    if self.run_overlay.settings['show_table']:
+                        for rect, idx in self.run_overlay.table_hits:
+                            if rect.collidepoint(event.pos):
+                                is_mst_done = self.mst_edges_count >= len(self.nodes) - 1
+                                target_step = idx + 1
+                                if target_step <= self.current_edge_idx or not is_mst_done:
+                                    if event.button == 1: 
+                                        self.jump_to_step(target_step)
+                                        clicked_ui = True
+                                break
+
                     if event.button == 1:
                         if clicked_ui:
                             rects = self.run_overlay.interactive_rects
                             settings = self.run_overlay.settings
-                            # UPDATED: Use switch_to_edit()
-                            if 'reset' in rects and rects['reset'].collidepoint(event.pos): self.switch_to_edit()
+                            
+                            if 'play_pause' in rects and rects['play_pause'].collidepoint(event.pos):
+                                self._toggle_play_pause()
+                            
+                            elif 'reset' in rects and rects['reset'].collidepoint(event.pos): self.switch_to_edit()
                             elif 'table_toggle' in rects and rects['table_toggle'].collidepoint(event.pos): settings['show_table'] = not settings['show_table']
                             elif 'toggle_ids' in rects and rects['toggle_ids'].collidepoint(event.pos): settings['show_ids'] = not settings['show_ids']
                             elif 'toggle_weights' in rects and rects['toggle_weights'].collidepoint(event.pos): settings['show_weights'] = not settings['show_weights']
@@ -195,22 +314,21 @@ class KruskalApp:
                         self.run_zoom = max(0.0001, self.run_zoom * zoom_factor)
                         self.run_offset = m_arr - (world_before * self.run_zoom)
                         self.graph_renderer.set_camera(self.run_zoom, self.run_offset, self.screen.get_width(), self.screen.get_height())
-
-                elif event.type == pygame.KEYDOWN:
-                    # UPDATED: Use switch_to_edit()
-                    if event.key == pygame.K_r: self.switch_to_edit()
-                    elif event.key == pygame.K_LEFT:
-                        if self.current_edge_idx > 0:
-                            self.current_edge_idx -= 1
-                            self.graph_renderer.update_states(self.current_edge_idx, 1, np.array([0.0, 0.0], dtype='f4'))
-                            self.graph_renderer.state_data[self.current_edge_idx*2] = 0.0
-                            self.graph_renderer.state_data[self.current_edge_idx*2+1] = 0.0
-                            self.parent = np.arange(len(self.parent))
-                            self.rank[:] = 0
-                            self.mst_edges_count, self.mst_total_weight = logic.fast_forward_dsu(self.sorted_edges, self.current_edge_idx, self.parent, self.rank)
-                            self.is_paused = True
-                            self.force_vis_update = True
-                    elif event.key == pygame.K_RIGHT: self.is_paused = False
+        
+        # --- HOLD KEY LOGIC ---
+        keys = pygame.key.get_pressed() 
+        if self.current_state == STATE_RUN:
+            if keys[pygame.K_RIGHT]:
+                self.is_paused = True
+                if current_time > self.next_step_time:
+                    self._manual_step_forward(count=None) 
+                    self.next_step_time = current_time + 50
+            elif keys[pygame.K_LEFT]:
+                self.is_paused = True
+                if current_time > self.next_step_time:
+                    step_size = 1 if len(self.sorted_edges) < 1000 else 5
+                    self.jump_to_step(self.current_edge_idx - step_size)
+                    self.next_step_time = current_time + 50
         
         if self.current_state == STATE_RUN and mouse_buttons[0] and not self.is_panning:
             if self.run_overlay.slider_rect.collidepoint(mouse_pos):
@@ -218,83 +336,80 @@ class KruskalApp:
 
     def update_simulation(self):
         self.frame_count += 1
-        should_step = False
-        batch_size = 1
-        if getattr(self, 'force_vis_update', False): should_step = False
+        
+        # FIX: Check Pause State First
+        if self.is_paused or getattr(self, 'force_vis_update', False):
+            pass # Skip logic
+        
+        # Only run if not finished
         elif self.mst_edges_count < (len(self.parent)-1) and self.current_edge_idx < len(self.sorted_edges):
-            if self.speed_value < 0.05:
-                if not self.is_paused: should_step = True; self.is_paused = True
-            else:
+            batch_size = 1
+            if self.speed_value >= 0.05:
                 batch_size = int(1 + (self.speed_value * 50)**3)
-                should_step = True
-
-        if should_step:
-            processed, added, w_added = logic.process_batch(self.sorted_edges, self.current_edge_idx, batch_size, self.parent, self.rank, self.graph_renderer.state_data)
+            
+            # Logic Processing
+            processed, added, w_added = logic.process_batch(
+                self.sorted_edges, self.current_edge_idx, batch_size, 
+                self.parent, self.rank, self.graph_renderer.state_data,
+                self.mst_edges_count, 
+                len(self.nodes) - 1
+            )
             start_byte = self.current_edge_idx * 2 * 4
             data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
             self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
             self.current_edge_idx += processed
             self.mst_edges_count += added
             self.mst_total_weight += w_added
-            if self.run_overlay.settings['show_table']:
-                 rows_visible = (self.screen.get_size()[1] - 50) // 25
-                 if self.current_edge_idx > self.run_overlay.settings['scroll'] + rows_visible - 2:
-                     self.run_overlay.settings['scroll'] = self.current_edge_idx - rows_visible + 2
+            
+            self._update_table_scroll()
 
-        if self.frame_count == 1 or self.frame_count % 10 == 0 or should_step or getattr(self, 'force_vis_update', False):
+        if self.frame_count == 1 or self.frame_count % 10 == 0 or getattr(self, 'force_vis_update', False):
              roots = logic.get_all_roots(self.parent)
              statuses = logic.get_node_statuses(self.parent, self.rank)
              valid_roots = roots[:len(self.circle_renderer.colors)]
              valid_stats = statuses[:len(self.circle_renderer.colors)]
              self.circle_renderer.update_state(valid_roots, valid_stats)
              self.force_vis_update = False
+        
         self.graph_renderer.set_visibility(self.run_overlay.settings['show_deleted'], self.run_overlay.settings['show_unseen'])
 
     def render(self):
-        # 1. Sync BG Color with Config (Normalized 0-1)
         r, g, b = COLOR_BG
         self.ctx.clear(r/255.0, g/255.0, b/255.0)
 
         if self.current_state == STATE_EDIT:
-            # --- HYBRID RENDERING FOR EDITOR ---
-            
-            # A. Update GPU buffers if data changed
             if self.graph_editor.dirty:
                 raw_edges, geom, raw_nodes, _ = self.graph_editor.export_data()
-                
-                # Create renderers if NODES exist
                 if raw_nodes is not None and len(raw_nodes) > 0:
                     self.edit_graph_renderer = gui.GraphRenderer(self.ctx, len(raw_edges), geom)
-                    self.edit_graph_renderer.set_mode(1) # Set to Editor Mode (Solid lines)
-                    
+                    self.edit_graph_renderer.set_mode(1) 
                     self.edit_circle_renderer = gui.CircleRenderer(self.ctx, raw_nodes)
                     self.edit_circle_renderer.update_state(np.arange(len(raw_nodes)), np.zeros(len(raw_nodes)))
                 else:
                     self.edit_graph_renderer = None
                     self.edit_circle_renderer = None
-                
                 self.graph_editor.dirty = False
 
-            # B. Draw GPU Graph (Behind UI)
             if self.edit_graph_renderer and self.edit_circle_renderer:
                 w, h = self.screen.get_size()
                 self.edit_graph_renderer.set_camera(self.graph_editor.zoom, self.graph_editor.offset, w, h)
-                
                 if self.edit_graph_renderer.n_edges > 0:
                     self.edit_graph_renderer.render()
-                
                 self.edit_circle_renderer.render(self.edit_graph_renderer.current_matrix, point_size=10.0, zoom=self.graph_editor.zoom)
 
-            # C. Draw UI on top (Transparent background if GPU active)
             use_gpu = (self.edit_circle_renderer is not None)
             surface = self.graph_editor.draw(draw_graph=not use_gpu) 
-            
             self.ui_renderer.update_texture(surface)
             self.ui_renderer.render()
 
         elif self.current_state == STATE_RUN:
             self.update_simulation()
+            
+            if self.current_edge_idx < len(self.sorted_edges):
+                self.graph_renderer.update_states(self.current_edge_idx, 1, np.array([3.0, 3.0], dtype='f4'))
+            
             self.graph_renderer.render()
+            
             pt_size = 5.0 if len(self.parent) > 2000 else 12.0
             self.circle_renderer.render(self.graph_renderer.current_matrix, point_size=pt_size, zoom=self.graph_renderer.zoom)
             context = {
@@ -307,7 +422,8 @@ class KruskalApp:
                 'state_data': self.graph_renderer.state_data,
                 'nodes': self.nodes,
                 'labels': self.labels,
-                'renderer': self.graph_renderer
+                'renderer': self.graph_renderer,
+                'is_paused': self.is_paused 
             }
             self.run_overlay.draw(self.ui_surface, context)
             self.ui_renderer.update_texture(self.ui_surface)

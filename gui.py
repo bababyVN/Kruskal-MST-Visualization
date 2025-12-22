@@ -256,6 +256,7 @@ class RuntimeOverlay:
         }
         self.slider_rect = pygame.Rect(20, SCREEN_SIZE[1] - 50, 200, 30)
         self.interactive_rects = {}
+        self.table_hits = [] 
         
         # Fonts
         self.font_main = pygame.font.SysFont("Arial", 14)
@@ -275,15 +276,24 @@ class RuntimeOverlay:
     def draw(self, surface, context_data):
         surface.fill((0,0,0,0))
         w, h = surface.get_size()
-        self.interactive_rects = {} # Reset hitboxes
+        self.interactive_rects = {} 
+        self.table_hits = [] 
         
         edges = context_data['sorted_edges']
         curr_idx = context_data['current_idx']
         nodes = context_data['nodes']
         renderer = context_data['renderer']
+        is_paused = context_data.get('is_paused', True) # Get pause state
         
+        # --- HIGHLIGHT CURRENT NODES ---
+        if curr_idx < len(edges):
+            u, v, _ = edges[curr_idx]
+            u_pos = self.project_point(nodes[int(u)], w, h, renderer.offset, renderer.zoom)
+            v_pos = self.project_point(nodes[int(v)], w, h, renderer.offset, renderer.zoom)
+            pygame.draw.circle(surface, COLOR_SELECTING, u_pos, 20, 2)
+            pygame.draw.circle(surface, COLOR_SELECTING, v_pos, 20, 2)
+
         # --- 1. LABELS WITH THRESHOLD CHECK ---
-        # UPDATED: Checks BOTH vertices AND edges count against threshold
         if context_data['total_vertices'] < TEXT_RENDER_THRESHOLD and len(edges) < TEXT_RENDER_THRESHOLD:
             if self.settings['show_weights']:
                 for i, (u, v, weight) in enumerate(edges):
@@ -313,30 +323,44 @@ class RuntimeOverlay:
                         txt = self.font_bold.render(lbl, True, COLOR_WHITE)
                         rect = txt.get_rect(center=(sx, sy))
                         surface.blit(txt, rect)
-        
-        # --- SHOW WARNING IF GRAPH TOO BIG ---
         else:
             if self.settings['show_ids'] or self.settings['show_weights']:
                 warn_text = "Graph is too big - ID and Weight rendering disabled"
                 lbl = self.font_bold.render(warn_text, True, (255, 80, 80))
                 bg = pygame.Rect(0, 0, lbl.get_width() + 20, lbl.get_height() + 10)
-                bg.center = (w // 2, h - 80) # Position slightly above the slider
-                
+                bg.center = (w // 2, h - 80)
                 pygame.draw.rect(surface, (30, 30, 30), bg, border_radius=5)
                 pygame.draw.rect(surface, (255, 80, 80), bg, 1, border_radius=5)
                 surface.blit(lbl, lbl.get_rect(center=bg.center))
         
-        # --- 2. SLIDER ---
+        # --- 2. CONTROLS (Slider + Buttons) ---
         pygame.draw.rect(surface, (40, 40, 40), self.slider_rect)
         pygame.draw.rect(surface, (200, 200, 200), self.slider_rect, 2)
         fill_width = int(self.slider_rect.width * context_data['speed_val'])
         pygame.draw.rect(surface, COLOR_SELECTING, (self.slider_rect.x, self.slider_rect.y, fill_width, self.slider_rect.height))
         
-        speed_text = "Step-by-Step" if context_data['speed_val'] < 0.05 else f"Auto Speed: {int(context_data['speed_val']*100)}%"
+        speed_text = "Step-by-Step" if context_data['speed_val'] < 0.05 else f"Speed: {int(context_data['speed_val']*100)}%"
         surface.blit(self.font_main.render(speed_text, True, COLOR_WHITE), (self.slider_rect.x, self.slider_rect.y - 20))
         
+        # PLAY / PAUSE BUTTON
+        btn_play = pygame.Rect(self.slider_rect.right + 20, self.slider_rect.y, 40, 30)
+        self.interactive_rects['play_pause'] = btn_play
+        pygame.draw.rect(surface, (60, 60, 60), btn_play, border_radius=5)
+        pygame.draw.rect(surface, (200, 200, 200), btn_play, 1, border_radius=5)
+        
+        if is_paused:
+            # Draw Green Triangle (Play)
+            p1 = (btn_play.x + 12, btn_play.y + 6)
+            p2 = (btn_play.x + 12, btn_play.y + 24)
+            p3 = (btn_play.x + 30, btn_play.y + 15)
+            pygame.draw.polygon(surface, (0, 255, 100), [p1, p2, p3])
+        else:
+            # Draw Two Bars (Pause)
+            pygame.draw.rect(surface, COLOR_WHITE, (btn_play.x + 11, btn_play.y + 7, 6, 16))
+            pygame.draw.rect(surface, COLOR_WHITE, (btn_play.x + 23, btn_play.y + 7, 6, 16))
+
         # RESET BUTTON
-        btn_reset = pygame.Rect(self.slider_rect.right + 20, self.slider_rect.y, 80, 30)
+        btn_reset = pygame.Rect(btn_play.right + 10, self.slider_rect.y, 80, 30)
         self.interactive_rects['reset'] = btn_reset
         pygame.draw.rect(surface, (200, 50, 50), btn_reset, border_radius=5)
         rst_txt = self.font_main.render("STOP", True, COLOR_WHITE)
@@ -345,12 +369,9 @@ class RuntimeOverlay:
         # --- 3. STATS ---
         target = context_data['total_vertices'] - 1
         mst_count = context_data['mst_edges_count']
-        
         status_txt = f"MST Edges: {mst_count} / {target}"
         col = (0, 255, 0) if mst_count >= target else (255, 255, 0)
-        if curr_idx >= len(edges) and mst_count < target: 
-            status_txt += " [FAILED]"
-            col = (255, 0, 0)
+        if curr_idx >= len(edges) and mst_count < target: status_txt += " [FAILED]"; col = (255, 0, 0)
         surface.blit(self.font_mono.render(status_txt, True, col), (20, 15))
         
         weight_txt = f"Total Weight: {context_data['mst_total_weight']:.1f}"
@@ -365,7 +386,6 @@ class RuntimeOverlay:
         # --- 4. EDGE QUEUE ---
         table_width = 240
         table_x = w - table_width if self.settings['show_table'] else w
-        
         toggle_rect = pygame.Rect(table_x - 30, 10, 30, 30)
         self.interactive_rects['table_toggle'] = toggle_rect
         pygame.draw.rect(surface, (40, 40, 40), toggle_rect, border_top_left_radius=5, border_bottom_left_radius=5)
@@ -379,9 +399,7 @@ class RuntimeOverlay:
             row_height = 25
             start_y = 50
             max_rows = (h - start_y) // row_height
-            
-            if self.settings['scroll'] > len(edges) - 1:
-                self.settings['scroll'] = 0
+            if self.settings['scroll'] > len(edges) - 1: self.settings['scroll'] = 0
             start_idx = self.settings['scroll']
             
             for i in range(max_rows):
@@ -395,20 +413,19 @@ class RuntimeOverlay:
                 bg_color = None
                 text_color = (180, 180, 180)
                 prefix = "   "
-                
                 if idx < curr_idx:
                     status = context_data['state_data'][idx*2]
-                    if status > 1.9:
-                        bg_color = (255, 215, 0, 80)
-                        text_color = (255, 255, 200); prefix = "MST "
-                    elif status > 0.9:
-                        bg_color = (255, 0, 0, 150)
-                        text_color = (255, 200, 200); prefix = "DEL "
+                    if status > 1.9: bg_color = (255, 215, 0, 80); text_color = (255, 255, 200); prefix = "MST "
+                    elif status > 0.9: bg_color = (255, 0, 0, 150); text_color = (255, 200, 200); prefix = "DEL "
                 elif idx == curr_idx:
-                    bg_color = (0, 255, 100, 50)
-                    text_color = COLOR_WHITE; prefix = "-> "
+                    bg_color = (0, 255, 100, 50); text_color = COLOR_WHITE; prefix = "-> "
                 
-                if bg_color: pygame.draw.rect(surface, bg_color, (table_x, start_y + i * row_height, table_width, row_height))
+                row_rect = pygame.Rect(table_x, start_y + i * row_height, table_width, row_height)
+                self.table_hits.append((row_rect, idx))
+                
+                if bg_color: pygame.draw.rect(surface, bg_color, row_rect)
+                mouse_pos = pygame.mouse.get_pos()
+                if row_rect.collidepoint(mouse_pos): pygame.draw.rect(surface, (255, 255, 255, 30), row_rect)
                 surface.blit(self.font_main.render(f"{prefix}{lbl_u}-{lbl_v} : {weight:.1f}", True, text_color), (table_x + 10, start_y + i * row_height + 5))
 
     def _draw_checkbox(self, surface, rect, label, state, key):

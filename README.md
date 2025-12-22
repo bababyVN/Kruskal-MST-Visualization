@@ -2,7 +2,7 @@
 
 A high-performance, interactive visualization tool for Kruskal's Minimum Spanning Tree (MST) algorithm. This application features a fully functional graph editor and a GPU-accelerated simulation mode capable of handling massive graphs (up to 100,000+ vertices).
 
-## 🚀 Features
+## Features
 
 * **Interactive Graph Editor**: Draw nodes, connect edges, and arrange your graph layout with a user-friendly interface.
 * **High-Performance Rendering**: Built with **ModernGL** (OpenGL) to render 100,000+ edges at 60 FPS.
@@ -11,7 +11,7 @@ A high-performance, interactive visualization tool for Kruskal's Minimum Spannin
 * **Save & Load System**: Save your graph layouts (topology + coordinates) or structure-only files.
 * **Optimized Logic**: Uses **Numba** (JIT compilation) for instant graph processing.
 
-## 🛠️ Installation
+## Installation
 
 1.  **Clone the repository** (or download the files).
 2.  **Install dependencies**:
@@ -19,7 +19,7 @@ A high-performance, interactive visualization tool for Kruskal's Minimum Spannin
     pip install -r requirements.txt
     ```
 
-## 🎮 Controls
+## Controls
 
 ### Global
 * **Right Click + Drag**: Pan the camera.
@@ -39,7 +39,7 @@ A high-performance, interactive visualization tool for Kruskal's Minimum Spannin
 * **R**: Return to **Editor Mode**.
 * **UI Toggles**: Toggle visibility of IDs, weights, and table data.
 
-## 📂 Project Structure
+## Project Structure
 
 * `main.py`: The entry point. Handles the main loop, state switching, and simulation logic.
 * `editor.py`: Manages the graph creation tools, input handling, and file I/O.
