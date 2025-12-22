@@ -4,190 +4,303 @@ import math
 import tkinter as tk
 from tkinter import filedialog
 
+# --- CONSTANTS ---
+TOOL_SELECT = 0
+TOOL_POINT = 1
+TOOL_EDGE = 2
+TOOL_DELETE = 3
+TOOL_PAN = 4
+
+COLOR_BG = (20, 24, 28)
+COLOR_UI = (45, 50, 55)
+COLOR_UI_HOVER = (60, 65, 70)
+COLOR_UI_ACTIVE = (0, 120, 215)
+COLOR_ACCENT = (0, 180, 80)
+COLOR_TEXT = (220, 220, 220)
+
 class GraphEditor:
     def __init__(self, width, height):
-        self.surface = pygame.Surface((width, height), pygame.SRCALPHA)
         self.width = width
         self.height = height
+        self.surface = pygame.Surface((width, height), pygame.SRCALPHA)
         
-        self.nodes = [] 
-        self.edges = [] 
+        # Data
+        self.nodes = [] # {'pos': [x,y], 'label': "A"}
+        self.edges = [] # {'u': 0, 'v': 1, 'weight': 10.0}
         
-        # Interaction
-        self.selected_node = None
-        self.hovered_node = None
-        self.dragging_edge = False
+        # Camera
+        self.offset = np.array([width/2, height/2], dtype='f4')
+        self.zoom = 1.0
         
-        # Toggle States
+        # State
+        self.current_tool = TOOL_SELECT
+        self.selection = None 
+        self.hover_item = None
+        self.dragging_node = None
+        self.panning = False
+        self.pan_start = (0,0)
+        self.drag_edge_start = None
+        self.mouse_world = (0,0)
+        
+        # UI State
+        self.trigger_run = False
+        self.editing_text = False 
+        self.input_buffer = ""
         self.show_ids = True
         self.show_weights = True
         
-        self.font = pygame.font.SysFont("Arial", 16)
-        self.node_font = pygame.font.SysFont("Arial", 12, bold=True)
+        # Assets
+        self.font = pygame.font.SysFont("Arial", 14)
+        self.bold_font = pygame.font.SysFont("Arial", 14, bold=True)
+        self.icon_font = pygame.font.SysFont("Segoe UI Symbol", 20) 
         
-        # Checkboxes
-        self.cb_ids_rect = pygame.Rect(10, 10, 20, 20)
-        self.cb_w_rect = pygame.Rect(10, 40, 20, 20)
+        # Toolbar Layout
+        self.toolbar_h = 50
+        self.tools = [
+            {'id': TOOL_SELECT, 'icon': "➤", 'tip': "Move"},
+            {'id': TOOL_POINT,  'icon': "●", 'tip': "Point"},
+            {'id': TOOL_EDGE,   'icon': "╱", 'tip': "Segment"},
+            {'id': TOOL_DELETE, 'icon': "✖", 'tip': "Delete"},
+            {'id': TOOL_PAN,    'icon': "✋", 'tip': "Pan View"}
+        ]
+        
+        self.btn_toggle_ids = pygame.Rect(width - 250, 12, 80, 26)
+        self.btn_toggle_w = pygame.Rect(width - 160, 12, 80, 26)
+        self.btn_run = pygame.Rect(width - 70, 10, 60, 30)
         
         root = tk.Tk()
         root.withdraw()
 
-    def load_from_file(self):
-        file_path = filedialog.askopenfilename(filetypes=[("Text/CSV", "*.txt *.csv")])
-        if not file_path: return
+    # --- COORDINATES ---
+    def screen_to_world(self, pos):
+        return (np.array(pos, dtype='f4') - self.offset) / self.zoom
 
-        try:
-            new_edges = []
-            max_node_idx = 0
-            with open(file_path, 'r') as f:
-                for line in f:
-                    parts = line.strip().replace(',', ' ').split()
-                    if len(parts) >= 3:
-                        u, v, w = int(parts[0]), int(parts[1]), float(parts[2])
-                        new_edges.append([u, v, w])
-                        max_node_idx = max(max_node_idx, u, v)
-            
-            self.nodes = []
-            self.edges = new_edges
-            n_nodes = max_node_idx + 1
-            radius = min(self.width, self.height) * 0.4
-            center_x, center_y = self.width // 2, self.height // 2
-            
-            for i in range(n_nodes):
-                angle = 2 * math.pi * i / n_nodes
-                x = center_x + radius * math.cos(angle)
-                y = center_y + radius * math.sin(angle)
-                self.nodes.append([x, y])
-            print(f"Loaded {len(self.edges)} edges.")
-            
-        except Exception as e:
-            print(f"Error loading file: {e}")
+    def world_to_screen(self, pos):
+        return (np.array(pos, dtype='f4') * self.zoom) + self.offset
 
+    # --- INPUT ---
     def handle_event(self, event):
-        mouse_pos = pygame.mouse.get_pos()
-        self.hovered_node = self._find_nearest_node(mouse_pos)
-        hovered_edge_idx = self._find_nearest_edge_weight(mouse_pos)
-
+        m_pos = pygame.mouse.get_pos()
+        self.mouse_world = self.screen_to_world(m_pos)
+        self.hover_item = self._hit_test(self.mouse_world)
+        
         if event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1: 
-                # Check UI first
-                if self.cb_ids_rect.collidepoint(mouse_pos):
-                    self.show_ids = not self.show_ids
-                    return
-                if self.cb_w_rect.collidepoint(mouse_pos):
-                    self.show_weights = not self.show_weights
-                    return
-
-                if self.hovered_node is not None:
-                    self.selected_node = self.hovered_node
-                    self.dragging_edge = True
-                else:
-                    self.nodes.append(list(mouse_pos))
+            if event.button == 1:
+                if m_pos[1] < self.toolbar_h:
+                    self._handle_toolbar_click(m_pos); return
+                
+                # Check Inspector
+                if self.selection:
+                    insp_rect = pygame.Rect(20, self.height - 120, 200, 100)
+                    if insp_rect.collidepoint(m_pos):
+                        self.editing_text = True
+                        if self.selection['type'] == 'node': self.input_buffer = self.nodes[self.selection['index']]['label']
+                        else: self.input_buffer = str(int(self.edges[self.selection['index']]['weight']))
+                        return
+                
+                self.editing_text = False 
+                
+                if self.current_tool == TOOL_SELECT:
+                    if self.hover_item:
+                        self.selection = self.hover_item
+                        if self.hover_item['type'] == 'node': self.dragging_node = self.hover_item['index']
+                    else: self.selection = None
+                        
+                elif self.current_tool == TOOL_POINT:
+                    self.nodes.append({'pos': self.mouse_world, 'label': str(len(self.nodes))})
                     
+                elif self.current_tool == TOOL_EDGE:
+                    if self.hover_item and self.hover_item['type'] == 'node': self.drag_edge_start = self.hover_item['index']
+                        
+                elif self.current_tool == TOOL_DELETE:
+                    if self.hover_item:
+                        if self.hover_item['type'] == 'node': self._delete_node(self.hover_item['index'])
+                        else: self._delete_edge(self.hover_item['index'])
+                        
+                elif self.current_tool == TOOL_PAN:
+                    self.panning = True; self.pan_start = np.array(m_pos, dtype='f4')
+
+            elif event.button == 2: 
+                self.panning = True; self.pan_start = np.array(m_pos, dtype='f4')
             elif event.button == 3: 
-                if hovered_edge_idx is not None:
-                    current_w = self.edges[hovered_edge_idx][2]
-                    new_w = 1.0 if current_w >= 20 else (current_w + 5.0)
-                    self.edges[hovered_edge_idx][2] = new_w
-                elif self.hovered_node is not None:
-                    self._delete_node(self.hovered_node)
+                self.drag_edge_start = None; self.dragging_node = None
 
         elif event.type == pygame.MOUSEBUTTONUP:
-            if event.button == 1 and self.dragging_edge:
-                if self.hovered_node is not None and self.hovered_node != self.selected_node:
-                    if not self._edge_exists(self.selected_node, self.hovered_node):
-                        self.edges.append([self.selected_node, self.hovered_node, 5.0])
-                self.dragging_edge = False
-                self.selected_node = None
+            if event.button == 1:
+                if self.current_tool == TOOL_EDGE and self.drag_edge_start is not None:
+                    if self.hover_item and self.hover_item['type'] == 'node':
+                        u, v = self.drag_edge_start, self.hover_item['index']
+                        if u != v: self._create_edge(u, v)
+                    self.drag_edge_start = None
+                self.dragging_node = None; self.panning = False
+            elif event.button == 2: self.panning = False
 
-    def _find_nearest_node(self, pos, threshold=15):
-        for i, (nx, ny) in enumerate(self.nodes):
-            if math.hypot(nx - pos[0], ny - pos[1]) < threshold: return i
-        return None
+        elif event.type == pygame.MOUSEMOTION:
+            if self.panning:
+                self.offset += np.array(m_pos, dtype='f4') - self.pan_start
+                self.pan_start = np.array(m_pos, dtype='f4')
+            elif self.dragging_node is not None:
+                self.nodes[self.dragging_node]['pos'] = self.mouse_world
 
-    def _find_nearest_edge_weight(self, pos, threshold=20):
-        if not self.show_weights: return None
-        for i, (u, v, w) in enumerate(self.edges):
-            if u >= len(self.nodes) or v >= len(self.nodes): continue
-            start, end = self.nodes[u], self.nodes[v]
-            mid_x, mid_y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
-            if math.hypot(mid_x - pos[0], mid_y - pos[1]) < threshold: return i
-        return None
+        elif event.type == pygame.MOUSEWHEEL:
+            zoom_factor = 1.1 if event.y > 0 else 0.9
+            world_before = self.screen_to_world(m_pos)
+            
+            # --- INFINITE ZOOM ---
+            self.zoom = max(0.0001, self.zoom * zoom_factor)
+            
+            self.offset += (np.array(m_pos) - self.world_to_screen(world_before))
 
-    def _edge_exists(self, u, v):
-        for edge in self.edges:
-            if (edge[0] == u and edge[1] == v) or (edge[0] == v and edge[1] == u): return True
-        return False
-
-    def _delete_node(self, node_idx):
-        self.nodes.pop(node_idx)
-        self.edges = [e for e in self.edges if e[0] != node_idx and e[1] != node_idx]
-        for edge in self.edges:
-            if edge[0] > node_idx: edge[0] -= 1
-            if edge[1] > node_idx: edge[1] -= 1
-
-    def draw(self):
-        self.surface.fill((0, 0, 0, 0)) 
-        
-        # --- UI Checkboxes ---
-        # IDs
-        pygame.draw.rect(self.surface, (50, 50, 50), self.cb_ids_rect)
-        pygame.draw.rect(self.surface, (200, 200, 200), self.cb_ids_rect, 2)
-        if self.show_ids:
-             pygame.draw.lines(self.surface, (0, 255, 0), False, 
-                [(self.cb_ids_rect.x+4, self.cb_ids_rect.y+10), 
-                 (self.cb_ids_rect.x+8, self.cb_ids_rect.y+16), 
-                 (self.cb_ids_rect.x+16, self.cb_ids_rect.y+4)], 2)
-        lbl_id = self.font.render("Show IDs", True, (255, 255, 255))
-        self.surface.blit(lbl_id, (self.cb_ids_rect.right + 10, self.cb_ids_rect.y))
-        
-        # Weights
-        pygame.draw.rect(self.surface, (50, 50, 50), self.cb_w_rect)
-        pygame.draw.rect(self.surface, (200, 200, 200), self.cb_w_rect, 2)
-        if self.show_weights:
-             pygame.draw.lines(self.surface, (0, 255, 0), False, 
-                [(self.cb_w_rect.x+4, self.cb_w_rect.y+10), 
-                 (self.cb_w_rect.x+8, self.cb_w_rect.y+16), 
-                 (self.cb_w_rect.x+16, self.cb_w_rect.y+4)], 2)
-        lbl_w = self.font.render("Show Weights", True, (255, 255, 255))
-        self.surface.blit(lbl_w, (self.cb_w_rect.right + 10, self.cb_w_rect.y))
-
-        # --- Graph ---
-        for u, v, w in self.edges:
-            if u < len(self.nodes) and v < len(self.nodes):
-                start, end = self.nodes[u], self.nodes[v]
-                pygame.draw.line(self.surface, (200, 200, 200), start, end, 2)
+        elif event.type == pygame.KEYDOWN:
+            if self.editing_text:
+                if event.key == pygame.K_RETURN: self.editing_text = False
+                elif event.key == pygame.K_BACKSPACE: self.input_buffer = self.input_buffer[:-1]
+                else: self.input_buffer += event.unicode
                 
-                if self.show_weights:
-                    mid_x, mid_y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
-                    label = f"{int(w)}"
-                    text = self.font.render(label, True, (0, 255, 255), (30, 30, 30))
-                    rect = text.get_rect(center=(mid_x, mid_y))
-                    self.surface.blit(text, rect)
+                if self.selection:
+                    if self.selection['type'] == 'node': self.nodes[self.selection['index']]['label'] = self.input_buffer
+                    elif self.selection['type'] == 'edge':
+                        try: self.edges[self.selection['index']]['weight'] = float(self.input_buffer)
+                        except: pass
+            else:
+                if event.key == pygame.K_DELETE and self.selection:
+                    if self.selection['type'] == 'node': self._delete_node(self.selection['index'])
+                    else: self._delete_edge(self.selection['index'])
+                    self.selection = None
 
-        if self.dragging_edge and self.selected_node is not None:
-            pygame.draw.line(self.surface, (100, 255, 100), self.nodes[self.selected_node], pygame.mouse.get_pos(), 1)
+    # --- LOGIC ---
+    def _hit_test(self, pos):
+        for i, n in enumerate(self.nodes):
+            if np.linalg.norm(n['pos'] - pos) < 20 / self.zoom: return {'type': 'node', 'index': i}
+        for i, e in enumerate(self.edges):
+            u, v = self.nodes[e['u']]['pos'], self.nodes[e['v']]['pos']
+            if self._dist_point_segment(pos, u, v) < 10 / self.zoom: return {'type': 'edge', 'index': i}
+        return None
 
-        for i, (x, y) in enumerate(self.nodes):
-            color = (255, 100, 100) if i == self.hovered_node else (50, 150, 255)
-            pygame.draw.circle(self.surface, color, (int(x), int(y)), 12)
-            
-            if self.show_ids:
-                id_text = self.node_font.render(str(i), True, (255, 255, 255))
-                id_rect = id_text.get_rect(center=(int(x), int(y)))
-                self.surface.blit(id_text, id_rect)
-            
+    def _dist_point_segment(self, p, a, b):
+        ab = b - a
+        if np.dot(ab, ab) == 0: return np.linalg.norm(p - a)
+        t = max(0, min(1, np.dot(p - a, ab) / np.dot(ab, ab)))
+        return np.linalg.norm(p - (a + t * ab))
+
+    def _create_edge(self, u, v):
+        for e in self.edges:
+            if (e['u']==u and e['v']==v) or (e['u']==v and e['v']==u): return
+        self.edges.append({'u': u, 'v': v, 'weight': 10.0})
+
+    def _delete_node(self, idx):
+        self.edges = [e for e in self.edges if e['u'] != idx and e['v'] != idx]
+        for e in self.edges:
+            if e['u'] > idx: e['u'] -= 1
+            if e['v'] > idx: e['v'] -= 1
+        self.nodes.pop(idx)
+
+    def _delete_edge(self, idx):
+        self.edges.pop(idx)
+
+    def _handle_toolbar_click(self, pos):
+        idx = int(pos[0] // 60)
+        if 0 <= idx < len(self.tools):
+            self.current_tool = self.tools[idx]['id']
+            self.selection = None; self.editing_text = False; return
+        if self.btn_run.collidepoint(pos): self.trigger_run = True
+        elif self.btn_toggle_ids.collidepoint(pos): self.show_ids = not self.show_ids
+        elif self.btn_toggle_w.collidepoint(pos): self.show_weights = not self.show_weights
+
+    # --- DRAWING ---
+    def draw(self):
+        self.surface.fill(COLOR_BG)
+        # Edges
+        for i, e in enumerate(self.edges):
+            u = tuple(self.world_to_screen(self.nodes[e['u']]['pos']).astype(int))
+            v = tuple(self.world_to_screen(self.nodes[e['v']]['pos']).astype(int))
+            is_sel = (self.selection and self.selection['type']=='edge' and self.selection['index']==i)
+            col = COLOR_ACCENT if is_sel else (100, 100, 120)
+            pygame.draw.line(self.surface, col, u, v, 4 if is_sel else 2)
+            if self.show_weights: self._draw_label(((u[0]+v[0])//2, (u[1]+v[1])//2), str(int(e['weight'])), (0,255,255))
+
+        # Dragging Line
+        if self.current_tool == TOOL_EDGE and self.drag_edge_start is not None:
+            u = tuple(self.world_to_screen(self.nodes[self.drag_edge_start]['pos']).astype(int))
+            pygame.draw.line(self.surface, (100, 255, 100), u, pygame.mouse.get_pos(), 2)
+
+        # Nodes
+        for i, n in enumerate(self.nodes):
+            pos = tuple(self.world_to_screen(n['pos']).astype(int))
+            is_sel = (self.selection and self.selection['type']=='node' and self.selection['index']==i)
+            fill = COLOR_ACCENT if is_sel else (60, 120, 200)
+            pygame.draw.circle(self.surface, fill, pos, 14)
+            pygame.draw.circle(self.surface, (255,255,255), pos, 14, 2)
+            if self.show_ids: self._draw_text_centered(n['label'], pos)
+
+        self._draw_ui()
+        if self.selection: self._draw_inspector()
         return self.surface
 
+    def _draw_label(self, pos, text, color):
+        lbl = self.font.render(text, True, color)
+        bg = pygame.Rect(pos[0], pos[1], lbl.get_width()+6, lbl.get_height()+4)
+        bg.center = pos
+        pygame.draw.rect(self.surface, (20, 20, 20), bg, border_radius=4)
+        self.surface.blit(lbl, lbl.get_rect(center=pos))
+
+    def _draw_text_centered(self, text, pos):
+        lbl = self.bold_font.render(text, True, (255, 255, 255))
+        self.surface.blit(lbl, lbl.get_rect(center=pos))
+
+    def _draw_ui(self):
+        pygame.draw.rect(self.surface, COLOR_UI, (0, 0, self.width, self.toolbar_h))
+        for i, tool in enumerate(self.tools):
+            rect = pygame.Rect(i*60, 0, 60, self.toolbar_h)
+            if self.current_tool == tool['id']: pygame.draw.rect(self.surface, COLOR_UI_ACTIVE, rect)
+            txt = self.icon_font.render(tool['icon'], True, COLOR_TEXT)
+            self.surface.blit(txt, txt.get_rect(center=rect.center))
+            pygame.draw.line(self.surface, (30,30,30), (rect.right, 5), (rect.right, 45))
+        self._draw_btn(self.btn_toggle_ids, "IDs", self.show_ids)
+        self._draw_btn(self.btn_toggle_w, "Wgt", self.show_weights)
+        
+        hover = self.btn_run.collidepoint(pygame.mouse.get_pos())
+        pygame.draw.rect(self.surface, (0, 200, 100) if hover else (0, 160, 80), self.btn_run, border_radius=4)
+        run_lbl = self.bold_font.render("RUN ▶", True, (255, 255, 255))
+        self.surface.blit(run_lbl, run_lbl.get_rect(center=self.btn_run.center))
+
+    def _draw_btn(self, rect, text, state):
+        col = COLOR_UI_ACTIVE if state else (60, 60, 60)
+        pygame.draw.rect(self.surface, col, rect, border_radius=4)
+        txt = self.font.render(text, True, (255,255,255))
+        self.surface.blit(txt, txt.get_rect(center=rect.center))
+
+    def _draw_inspector(self):
+        panel_rect = pygame.Rect(10, self.height - 110, 220, 100)
+        pygame.draw.rect(self.surface, COLOR_UI, panel_rect, border_radius=8)
+        pygame.draw.rect(self.surface, (100, 100, 100), panel_rect, 1, border_radius=8)
+        
+        type_str = "Node" if self.selection['type'] == 'node' else "Edge"
+        title = self.bold_font.render(f"Edit {type_str}", True, COLOR_ACCENT)
+        self.surface.blit(title, (panel_rect.x+10, panel_rect.y+10))
+        
+        box_rect = pygame.Rect(panel_rect.x+70, panel_rect.y+40, 130, 30)
+        box_col = (255, 255, 255) if self.editing_text else (200, 200, 200)
+        pygame.draw.rect(self.surface, (30, 30, 30), box_rect)
+        pygame.draw.rect(self.surface, box_col, box_rect, 1)
+        
+        display_text = self.input_buffer if self.editing_text else \
+            (self.nodes[self.selection['index']]['label'] if self.selection['type']=='node' else str(int(self.edges[self.selection['index']]['weight'])))
+        txt_surf = self.font.render(display_text, True, (255, 255, 255))
+        self.surface.blit(txt_surf, (box_rect.x+5, box_rect.y+7))
+
     def export_data(self):
-        if not self.nodes: return None, None, None
-        pixel_coords = np.array(self.nodes, dtype='f4')
-        norm_coords = np.zeros_like(pixel_coords)
-        norm_coords[:, 0] = (pixel_coords[:, 0] / self.width) * 2 - 1
-        norm_coords[:, 1] = -((pixel_coords[:, 1] / self.height) * 2 - 1)
-        edges_array = np.array(self.edges, dtype=np.float64)
+        if not self.nodes: return None, None, None, None
+        
+        # Export Raw World Positions
+        positions = np.array([n['pos'] for n in self.nodes], dtype='f4')
+        edge_list = [[e['u'], e['v'], e['weight']] for e in self.edges]
+        edges_array = np.array(edge_list, dtype=np.float64) if edge_list else np.array([])
+        
         line_geometry = np.empty((len(self.edges) * 2, 2), dtype='f4')
-        for i, (u, v, w) in enumerate(self.edges):
-            line_geometry[i*2] = norm_coords[u]
-            line_geometry[i*2+1] = norm_coords[v]
-        return edges_array, line_geometry, norm_coords
+        for i, e in enumerate(self.edges):
+            line_geometry[i*2] = positions[e['u']]
+            line_geometry[i*2+1] = positions[e['v']]
+            
+        labels = [n['label'] for n in self.nodes]
+        return edges_array, line_geometry, positions, labels

@@ -46,18 +46,22 @@ def get_node_statuses(parent, rank):
 
 @njit
 def process_batch(sorted_edges, start_idx, batch_size, parent, rank, state_buffer):
-    """Normal processing: Updates DSU and writes colors to state_buffer."""
+    """
+    Returns: (processed_count, mst_edges_added, batch_weight_added)
+    """
     processed_count = 0
     mst_added_count = 0
+    batch_weight = 0.0
     limit = min(start_idx + batch_size, len(sorted_edges))
     
     for i in range(start_idx, limit):
-        u, v, _ = sorted_edges[i]
+        u, v, w = sorted_edges[i]
         is_merged, _ = union(parent, rank, int(u), int(v))
         
         if is_merged:
             status = 2 # MST
             mst_added_count += 1
+            batch_weight += w
         else:
             status = 1 # Rejected
             
@@ -65,30 +69,37 @@ def process_batch(sorted_edges, start_idx, batch_size, parent, rank, state_buffe
         state_buffer[i*2 + 1] = status
         processed_count += 1
         
-    return processed_count, mst_added_count
+    return processed_count, mst_added_count, batch_weight
 
 @njit
 def fast_forward_dsu(sorted_edges, limit, parent, rank):
     """
-    Time Machine Logic: Re-runs the algorithm from step 0 to 'limit'
-    purely to restore the 'parent' and 'rank' arrays. 
-    Does NOT update graphics.
+    Re-runs algorithm to restore state.
+    Returns: (mst_edges_count, total_weight)
     """
     mst_added_count = 0
+    total_weight = 0.0
+    
     for i in range(limit):
-        u, v, _ = sorted_edges[i]
+        u, v, w = sorted_edges[i]
         is_merged, _ = union(parent, rank, int(u), int(v))
         if is_merged:
             mst_added_count += 1
-    return mst_added_count
+            total_weight += w
+            
+    return mst_added_count, total_weight
 
 def prepare_data(n_vertices, n_edges):
-    print(f"Generating Circular Data: {n_vertices} Vertices, {n_edges} Edges...")
+    print(f"Generating Large Scale Data: {n_vertices} Vertices...")
     
-    radius = np.sqrt(np.random.uniform(0, 1, n_vertices)) * 0.9
+    # Scale up coordinates for the new Camera System
+    scale_factor = 2000.0 
+    
+    radius = np.sqrt(np.random.uniform(0, 1, n_vertices)) * scale_factor
     angle = np.random.uniform(0, 2 * np.pi, n_vertices)
     x = radius * np.cos(angle)
     y = radius * np.sin(angle)
+    
     vertices = np.column_stack((x, y)).astype('f4')
     
     u = np.random.randint(0, n_vertices, n_edges)
