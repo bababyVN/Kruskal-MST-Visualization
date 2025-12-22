@@ -508,7 +508,7 @@ class GraphEditor:
 
         hover = self.btn_run.collidepoint(pygame.mouse.get_pos())
         pygame.draw.rect(self.surface, (0, 200, 100) if hover else (0, 160, 80), self.btn_run, border_radius=4)
-        run_lbl = self.bold_font.render("RUN ▶", True, COLOR_WHITE)
+        run_lbl = self.bold_font.render("RUN", True, COLOR_WHITE)
         self.surface.blit(run_lbl, run_lbl.get_rect(center=self.btn_run.center))
 
     def _draw_btn(self, rect, text, state):
