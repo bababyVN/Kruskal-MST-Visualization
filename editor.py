@@ -1,7 +1,7 @@
 import pygame
 import numpy as np
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, simpledialog
 import math
 from config import *
 
@@ -70,6 +70,8 @@ class GraphEditor:
         self.btn_toggle_ids = pygame.Rect(width - 300, 12, 60, 26)
         self.btn_toggle_w = pygame.Rect(width - 370, 12, 60, 26)
         
+        self.btn_gen = pygame.Rect(width - 440, 12, 60, 26)
+        
         self.root = tk.Tk()
         self.root.withdraw()
 
@@ -85,7 +87,6 @@ class GraphEditor:
         m_pos = pygame.mouse.get_pos()
         self.mouse_world = self.screen_to_world(m_pos)
         
-        # Optimize: Disable hit testing for massive graphs
         if len(self.edges) < 5000:
             self.hover_item = self._hit_test(self.mouse_world)
         else:
@@ -177,6 +178,8 @@ class GraphEditor:
                     if self.selection['type'] == 'node': self._delete_node(self.selection['index'])
                     else: self._delete_edge(self.selection['index'])
                     self.selection = None
+                elif event.key == pygame.K_g:
+                    self._prompt_random_graph()
 
     def _confirm_edit(self):
         if not self.selection: return
@@ -235,6 +238,54 @@ class GraphEditor:
         elif self.btn_toggle_w.collidepoint(pos): self.show_weights = not self.show_weights
         elif self.btn_save.collidepoint(pos): self.show_save_menu = not self.show_save_menu
         elif self.btn_load.collidepoint(pos): self._load_graph(); self.show_save_menu = False
+        elif self.btn_gen.collidepoint(pos): self._prompt_random_graph()
+
+    def _prompt_random_graph(self):
+        try:
+            n = simpledialog.askinteger("Random Graph", "Number of Nodes (N):", parent=self.root, minvalue=2, maxvalue=5000, initialvalue=20)
+            if not n: return
+            max_edges = n * (n - 1) // 2
+            m = simpledialog.askinteger("Random Graph", f"Number of Edges (M) [Max {max_edges}]:", parent=self.root, minvalue=1, maxvalue=max_edges, initialvalue=30)
+            if not m: return
+            self._generate_random_graph(n, m)
+        except Exception as e:
+            print(f"Generation error: {e}")
+
+    def _generate_random_graph(self, n, m):
+        print(f"Generating {n} nodes, {m} edges...")
+        self.nodes = []
+        self.edges = []
+        area_scale = math.sqrt(n) * 50
+        center_x, center_y = 0, 0
+        
+        for i in range(n):
+            x = np.random.uniform(center_x - area_scale, center_x + area_scale)
+            y = np.random.uniform(center_y - area_scale, center_y + area_scale)
+            self.nodes.append({
+                'pos': np.array([x, y], dtype='f4'),
+                'label': str(i)
+            })
+            
+        existing_edges = set()
+        edges_created = 0
+        attempts = 0
+        max_attempts = m * 5 
+        
+        while edges_created < m and attempts < max_attempts:
+            attempts += 1
+            u = np.random.randint(0, n)
+            v = np.random.randint(0, n)
+            if u == v: continue
+            key = tuple(sorted((u, v)))
+            if key in existing_edges: continue
+            existing_edges.add(key)
+            w = np.random.randint(1, 100)
+            self.edges.append({'u': u, 'v': v, 'weight': float(w)})
+            edges_created += 1
+            
+        self.selection = None
+        self.dirty = True 
+        print("Graph generation complete.")
 
     def _save_graph(self, with_coords):
         filename = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text Files", "*.txt")])
@@ -325,7 +376,7 @@ class GraphEditor:
                 pygame.draw.circle(self.surface, COLOR_WHITE, pos, 14, 2)
         
         # --- TEXT RENDERING WITH CULLING ---
-        TEXT_RENDER_THRESHOLD = 2500
+        # Using the constant imported from config.py
         if len(self.nodes) > TEXT_RENDER_THRESHOLD:
             if self.show_ids or self.show_weights:
                 warn_text = "Graph is too big - ID and Weight rendering disabled"
@@ -383,6 +434,7 @@ class GraphEditor:
         self._draw_btn(self.btn_toggle_w, "Wgt", self.show_weights)
         self._draw_btn(self.btn_save, "SAVE", self.show_save_menu)
         self._draw_btn(self.btn_load, "LOAD", False)
+        self._draw_btn(self.btn_gen, "GEN", False)
         
         if self.show_save_menu:
             pygame.draw.rect(self.surface, COLOR_UI, self.save_menu_rect, border_radius=5)
@@ -397,6 +449,7 @@ class GraphEditor:
 
     def _draw_btn(self, rect, text, state):
         col = COLOR_UI_ACTIVE if state else (60, 60, 60)
+        if rect.collidepoint(pygame.mouse.get_pos()) and not state: col = COLOR_UI_HOVER
         pygame.draw.rect(self.surface, col, rect, border_radius=4)
         txt = self.font.render(text, True, COLOR_WHITE)
         self.surface.blit(txt, txt.get_rect(center=rect.center))
