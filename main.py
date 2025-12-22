@@ -140,8 +140,20 @@ class KruskalApp:
         elif idx < scroll:
             self.run_overlay.settings['scroll'] = max(0, idx - 1)
 
+    # --- Helper to refresh edge colors for Forest View ---
+    def _refresh_edge_buffer(self):
+        # Only refresh if Forest Mode is active
+        if self.graph_renderer and self.graph_renderer.forest_mode:
+            logic.refresh_mst_colors(
+                self.sorted_edges, 
+                self.current_edge_idx, 
+                self.parent, 
+                self.graph_renderer.state_data
+            )
+            # Re-upload the ENTIRE buffer because ANY edge color could have changed
+            self.graph_renderer.state_vbo.write(self.graph_renderer.state_data.tobytes())
+
     def jump_to_step(self, target_idx):
-        """Instantly resets and fast-forwards the simulation to target_idx."""
         if target_idx < 0: target_idx = 0
         if target_idx > len(self.sorted_edges): target_idx = len(self.sorted_edges)
         
@@ -168,6 +180,10 @@ class KruskalApp:
             self.mst_edges_count = added
             self.mst_total_weight = w_added
 
+        # For Jump, we always refresh everything
+        if self.graph_renderer.forest_mode:
+            logic.refresh_mst_colors(self.sorted_edges, self.current_edge_idx, self.parent, self.graph_renderer.state_data)
+        
         self.graph_renderer.state_vbo.write(self.graph_renderer.state_data.tobytes())
         self.force_vis_update = True
         self.is_paused = True
@@ -190,14 +206,20 @@ class KruskalApp:
                 self.mst_edges_count, 
                 len(self.nodes) - 1
             )
-            start_byte = self.current_edge_idx * 2 * 4
-            data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
-            self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
+            
+            # If Forest Mode is OFF, we can do the fast partial update
+            if not self.graph_renderer.forest_mode:
+                start_byte = self.current_edge_idx * 2 * 4
+                data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
+                self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
+            
             self.current_edge_idx += processed
             self.mst_edges_count += added
             self.mst_total_weight += w_added
             self.force_vis_update = True
             
+            # If Forest Mode is ON, we must refresh ALL edge colors
+            self._refresh_edge_buffer()
             self._update_table_scroll()
 
     def _toggle_play_pause(self):
@@ -240,6 +262,14 @@ class KruskalApp:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r: self.switch_to_edit()
                     
+                    # Toggle Forest Mode
+                    elif event.key == pygame.K_f:
+                        new_mode = not self.graph_renderer.forest_mode
+                        self.graph_renderer.set_forest_mode(new_mode)
+                        # Force a full refresh when toggling
+                        if new_mode: self._refresh_edge_buffer()
+                        self.force_vis_update = True
+
                     # PLAY / PAUSE Toggle
                     elif event.key == pygame.K_SPACE:
                         self._toggle_play_pause()
@@ -337,30 +367,31 @@ class KruskalApp:
     def update_simulation(self):
         self.frame_count += 1
         
-        # FIX: Check Pause State First
         if self.is_paused or getattr(self, 'force_vis_update', False):
-            pass # Skip logic
+            pass 
         
-        # Only run if not finished
         elif self.mst_edges_count < (len(self.parent)-1) and self.current_edge_idx < len(self.sorted_edges):
             batch_size = 1
             if self.speed_value >= 0.05:
                 batch_size = int(1 + (self.speed_value * 50)**3)
             
-            # Logic Processing
             processed, added, w_added = logic.process_batch(
                 self.sorted_edges, self.current_edge_idx, batch_size, 
                 self.parent, self.rank, self.graph_renderer.state_data,
                 self.mst_edges_count, 
                 len(self.nodes) - 1
             )
-            start_byte = self.current_edge_idx * 2 * 4
-            data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
-            self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
+            
+            if not self.graph_renderer.forest_mode:
+                start_byte = self.current_edge_idx * 2 * 4
+                data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
+                self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
+            
             self.current_edge_idx += processed
             self.mst_edges_count += added
             self.mst_total_weight += w_added
             
+            self._refresh_edge_buffer()
             self._update_table_scroll()
 
         if self.frame_count == 1 or self.frame_count % 10 == 0 or getattr(self, 'force_vis_update', False):

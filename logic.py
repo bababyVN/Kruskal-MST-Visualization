@@ -55,13 +55,16 @@ def process_batch(sorted_edges, start_idx, limit, parent, rank, state_data, curr
             break
             
         u, v, w = sorted_edges[start_idx + i]
-        is_merged, _ = union(parent, rank, int(u), int(v))
+        is_merged, root_val = union(parent, rank, int(u), int(v))
         
         idx_in_buffer = (start_idx + i) * 2
         
         if is_merged:
-            state_data[idx_in_buffer] = 2.0
-            state_data[idx_in_buffer+1] = 2.0 
+            # Set to generic MST state initially (will be colored by refresh)
+            # Using 10.0 + root immediately helps, but roots change!
+            val = 10.0 + float(root_val)
+            state_data[idx_in_buffer] = val
+            state_data[idx_in_buffer+1] = val
             mst_added_count += 1
             total_weight += w
         else:
@@ -74,6 +77,25 @@ def process_batch(sorted_edges, start_idx, limit, parent, rank, state_data, curr
             break
             
     return processed_count, mst_added_count, total_weight
+
+# --- NEW FUNCTION ---
+@njit
+def refresh_mst_colors(sorted_edges, limit, parent, state_data):
+    """
+    Re-calculates the root ID for ALL MST edges up to the current limit.
+    This ensures edges change color when their tree merges with another tree.
+    """
+    for i in range(limit):
+        idx = i * 2
+        # Check if this edge is part of MST (Status >= 2.0)
+        if state_data[idx] >= 2.0:
+            u = int(sorted_edges[i, 0])
+            # Find the CURRENT root of this edge's component
+            current_root = find(parent, u)
+            # Update the color ID
+            val = 10.0 + float(current_root)
+            state_data[idx] = val
+            state_data[idx+1] = val
 
 @njit
 def fast_forward_dsu(sorted_edges, limit, parent, rank):
@@ -92,49 +114,34 @@ def fast_forward_dsu(sorted_edges, limit, parent, rank):
 def prepare_data(n_vertices, n_edges):
     print(f"Generating Large Scale Data: {n_vertices} Vertices, {n_edges} Edges...")
     
-    # 1. Generate Nodes
     scale_factor = 2000.0 
     radius = np.sqrt(np.random.uniform(0, 1, n_vertices)) * scale_factor
     angle = np.random.uniform(0, 2 * np.pi, n_vertices)
     x = radius * np.cos(angle)
     y = radius * np.sin(angle)
     
-    nodes = np.column_stack((x, y)).astype('f4')
+    vertices = np.column_stack((x, y)).astype('f4')
     
-    # 2. Generate Random Edges
     u = np.random.randint(0, n_vertices, n_edges)
     v = np.random.randint(0, n_vertices, n_edges)
     weights = np.random.uniform(1, 100, n_edges)
     
-    # Filter self-loops
     mask = u != v
     u, v, weights = u[mask], v[mask], weights[mask]
     
-    # Create raw edge array
-    raw_edges = np.column_stack((u, v, weights)).astype(np.float64)
+    edges = np.column_stack((u, v, weights)).astype(np.float64)
     
-    # 3. SORT EDGES (Critical for Kruskal's)
-    # We must sort by weight (column 2)
-    sorted_indices = np.argsort(raw_edges[:, 2])
-    sorted_edges = raw_edges[sorted_indices]
+    sorted_indices = np.argsort(edges[:, 2])
+    sorted_edges = edges[sorted_indices]
     
-    # 4. BUILD GEOMETRY (Critical for Rendering)
-    # We need to map edge indices -> node coordinates
-    # shape: (N_edges * 2, 2)
-    
-    # Re-extract sorted u and v indices as integers
     u_sorted = sorted_edges[:, 0].astype(int)
     v_sorted = sorted_edges[:, 1].astype(int)
+    start_points = vertices[u_sorted]
+    end_points = vertices[v_sorted]
     
-    # Fetch coordinates using fancy indexing (fast)
-    start_points = nodes[u_sorted]
-    end_points = nodes[v_sorted]
-    
-    # Interleave them: [Start0, End0, Start1, End1, ...]
     n_lines = len(sorted_edges)
     line_geometry = np.empty((n_lines * 2, 2), dtype='f4')
     line_geometry[0::2] = start_points
     line_geometry[1::2] = end_points
     
-    print("Data Generation Complete.")
-    return sorted_edges, line_geometry, nodes
+    return sorted_edges, line_geometry, vertices

@@ -84,32 +84,27 @@ class GraphEditor:
 
     # --- NEW: Auto-Fit Camera ---
     def fit_to_screen(self):
-        """Resets camera to fit all nodes on screen."""
         if not self.nodes:
             self.offset = np.array([self.width/2, self.height/2], dtype='f4')
             self.zoom = 1.0
             return
 
-        # Find bounds
         min_x = min(n['pos'][0] for n in self.nodes)
         max_x = max(n['pos'][0] for n in self.nodes)
         min_y = min(n['pos'][1] for n in self.nodes)
         max_y = max(n['pos'][1] for n in self.nodes)
         
-        # Add padding
         pad = 100
         content_w = max_x - min_x + pad * 2
         content_h = max_y - min_y + pad * 2
         
         if content_w <= 0 or content_h <= 0: return
 
-        # Calculate zoom
         zoom_x = self.width / content_w
         zoom_y = self.height / content_h
         target_zoom = min(zoom_x, zoom_y)
-        self.zoom = min(1.0, max(0.01, target_zoom)) # Clamp zoom
+        self.zoom = min(1.0, max(0.01, target_zoom)) 
         
-        # Center point
         center_world = np.array([(min_x + max_x)/2, (min_y + max_y)/2], dtype='f4')
         self.offset = np.array([self.width/2, self.height/2], dtype='f4') - center_world * self.zoom
 
@@ -125,7 +120,6 @@ class GraphEditor:
         
         if event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
-                # Menu Logic
                 if self.show_save_menu:
                     if self.btn_save_xy.collidepoint(m_pos):
                         self._save_graph(with_coords=True); self.show_save_menu = False; return
@@ -137,7 +131,6 @@ class GraphEditor:
                 if m_pos[1] < self.toolbar_h:
                     self._handle_toolbar_click(m_pos); return
                 
-                # Inspector
                 if self.selection:
                     insp_rect = pygame.Rect(20, self.height - 120, 200, 100)
                     if insp_rect.collidepoint(m_pos):
@@ -275,23 +268,72 @@ class GraphEditor:
 
     def _prompt_random_graph(self):
         try:
-            n = simpledialog.askinteger("Random Graph", "Number of Nodes (N):", parent=self.root, minvalue=2, maxvalue=5000, initialvalue=20)
+            n = simpledialog.askinteger("Random Graph", "Number of Nodes (N):", parent=self.root, minvalue=4, maxvalue=10000, initialvalue=50)
             if not n: return
-            max_edges = n * (n - 1) // 2
-            m = simpledialog.askinteger("Random Graph", f"Number of Edges (M) [Max {max_edges}]:", parent=self.root, minvalue=1, maxvalue=max_edges, initialvalue=30)
-            if not m: return
             
-            use_random = messagebox.askyesno(
-                "Layout Generation", 
-                "Generate with RANDOM positions?\n\n(Click 'No' for Circular/Topo Layout)"
+            # Ask Type: Grid vs Random
+            is_grid = messagebox.askyesno(
+                "Graph Type", 
+                "Do you want to generate a GRID (Maze) graph?\n\n(Yes = Grid, No = Random Points)"
             )
             
-            self._generate_random_graph(n, m, use_random)
+            if is_grid:
+                self._generate_grid_graph(n)
+            else:
+                max_edges = n * (n - 1) // 2
+                m = simpledialog.askinteger("Random Graph", f"Number of Edges (M) [Max {max_edges}]:", parent=self.root, minvalue=1, maxvalue=max_edges, initialvalue=n*2)
+                if not m: return
+                
+                # Layout question
+                use_random_layout = messagebox.askyesno("Layout", "Use Random Layout?\n(No = Circular)")
+                self._generate_random_graph(n, m, use_random_layout)
         except Exception as e:
             print(f"Generation error: {e}")
 
+    # --- NEW: Grid Generator for Mazes ---
+    def _generate_grid_graph(self, total_nodes):
+        # Calculate dimensions
+        side = int(math.sqrt(total_nodes))
+        rows, cols = side, side
+        
+        self.nodes = []
+        self.edges = []
+        
+        print(f"Generating Grid: {cols}x{rows}")
+        
+        spacing = 60
+        # Create Nodes
+        for r in range(rows):
+            for c in range(cols):
+                self.nodes.append({
+                    'pos': np.array([c * spacing, r * spacing], dtype='f4'),
+                    'label': str(len(self.nodes))
+                })
+        
+        # Create Edges (Right and Down)
+        for r in range(rows):
+            for c in range(cols):
+                u = r * cols + c
+                
+                # Right neighbor
+                if c < cols - 1:
+                    v = r * cols + (c + 1)
+                    w = np.random.uniform(1, 100)
+                    self.edges.append({'u': u, 'v': v, 'weight': w})
+                
+                # Bottom neighbor
+                if r < rows - 1:
+                    v = (r + 1) * cols + c
+                    w = np.random.uniform(1, 100)
+                    self.edges.append({'u': u, 'v': v, 'weight': w})
+        
+        self.selection = None
+        self.dirty = True 
+        self.fit_to_screen()
+        print("Grid Generated.")
+
     def _generate_random_graph(self, n, m, use_random):
-        print(f"Generating {n} nodes, {m} edges (Random: {use_random})...")
+        print(f"Generating {n} nodes, {m} edges...")
         self.nodes = []
         self.edges = []
         
@@ -330,7 +372,7 @@ class GraphEditor:
         self.selection = None
         self.dirty = True 
         print("Graph generation complete.")
-        self.fit_to_screen() # Auto-fit camera
+        self.fit_to_screen()
 
     def _save_graph(self, with_coords):
         filename = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text Files", "*.txt")])

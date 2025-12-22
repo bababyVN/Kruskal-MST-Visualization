@@ -2,7 +2,29 @@ import moderngl
 import numpy as np
 from pyrr import Matrix44
 import pygame
+import math
+import colorsys
 from config import *
+
+# --- HELPER: CPU-Side Color Generator (Must match Shader Logic) ---
+def get_color_for_id(n):
+    """
+    Generates a color for a given float ID using Golden Ratio Hue.
+    Matches the GLSL 'hsv2rgb' logic in the shader below.
+    """
+    # Recover the integer Root ID (logic.py adds 10.0)
+    root_id = float(n) - 10.0
+    
+    # Golden Ratio Conjugate to spread hues evenly
+    # This math is stable across CPU/GPU
+    hue = (root_id * 0.61803398875) % 1.0
+    
+    # Fixed Saturation/Value for nice neon colors
+    saturation = 0.75
+    value = 0.95
+    
+    # Convert to RGB
+    return colorsys.hsv_to_rgb(hue, saturation, value)
 
 class TextureRenderer:
     """Renders the UI Surface (Table/Sliders) overlay."""
@@ -60,7 +82,7 @@ class CircleRenderer:
                 #version 330
                 in vec2 in_vert;
                 in vec3 in_color;
-                in float in_status; // 0.0 = Unselected, 1.0 = Selected (MST)
+                in float in_status;
                 out vec3 v_color;
                 
                 uniform mat4 u_transform;
@@ -69,7 +91,6 @@ class CircleRenderer:
                 
                 void main() {
                     gl_Position = u_transform * vec4(in_vert, 0.0, 1.0);
-                    
                     float raw_size = u_base_size * u_zoom;
                     
                     if (in_status > 0.5) {
@@ -107,8 +128,14 @@ class CircleRenderer:
                 (self.status_vbo, '1f', 'in_status')
             ])
 
-            np.random.seed(999) 
-            self.palette = np.random.uniform(0.2, 1.0, (self.n_verts + 1, 3)).astype('f4')
+            # --- COLOR SYNC ---
+            # Generate the EXACT same palette Python-side
+            self.palette = np.zeros((self.n_verts + 1, 3), dtype='f4')
+            for i in range(self.n_verts + 1):
+                # +10.0 matches the offset logic in logic.py
+                c = get_color_for_id(10.0 + float(i)) 
+                self.palette[i] = c
+                
         else:
             self.vbo = None
             self.color_vbo = None
@@ -140,6 +167,7 @@ class GraphRenderer:
         self.offset = np.array([0.0, 0.0], dtype='f4')
         self.width = float(SCREEN_SIZE[0])
         self.height = float(SCREEN_SIZE[1])
+        self.forest_mode = False 
         
         self.prog = self.ctx.program(
             vertex_shader='''
@@ -160,23 +188,53 @@ class GraphRenderer:
                 uniform float u_show_rejected;
                 uniform float u_show_unseen;
                 uniform int u_mode; // 0 = Simulation, 1 = Editor
+                uniform int u_forest_mode; // 1 = Enable Component Coloring
                 
+                // Helper: HSV to RGB (GLSL Standard)
+                vec3 hsv2rgb(vec3 c) {
+                    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+                    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+                    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+                }
+
                 void main() {
                     if (u_mode == 1) {
                         // EDITOR MODE: Solid Lines
                         f_color = vec4(0.4, 0.4, 0.5, 1.0);
                     } else {
                         // SIMULATION MODE
-                        if (v_state > 2.9) {
+                        
+                        if (v_state > 9.5) { 
+                            // --- MST EDGE (With Component ID) ---
+                            if (u_forest_mode == 1) {
+                                // Extract Root ID
+                                float root_id = v_state - 10.0;
+                                
+                                // Golden Ratio Hue (Must match Python!)
+                                float hue = fract(root_id * 0.61803398875);
+                                
+                                // Fixed Saturation/Value (Matches Python)
+                                vec3 c = hsv2rgb(vec3(hue, 0.75, 0.95));
+                                
+                                f_color = vec4(c, 1.0);
+                            } else {
+                                // Standard Gold
+                                f_color = vec4(1.0, 0.8, 0.0, 1.0); 
+                            }
+                        }
+                        else if (v_state > 2.9) {
                             f_color = vec4(0.0, 1.0, 0.2, 1.0); // Selecting (Green)
-                        } else if (v_state > 1.9) {
-                            f_color = vec4(1.0, 0.8, 0.0, 1.0); // MST (Gold)
-                        } else if (v_state > 0.9) {
+                        } 
+                        else if (v_state > 1.9) {
+                            f_color = vec4(1.0, 0.8, 0.0, 1.0); 
+                        } 
+                        else if (v_state > 0.9) {
                             if (u_show_rejected < 0.5) discard;
-                            f_color = vec4(1.0, 0.0, 0.0, 0.2); 
-                        } else {
+                            f_color = vec4(1.0, 0.0, 0.0, 0.2); // Rejected (Red)
+                        } 
+                        else {
                             if (u_show_unseen < 0.5) discard;
-                            f_color = vec4(0.3, 0.3, 0.3, 0.15); 
+                            f_color = vec4(0.3, 0.3, 0.3, 0.15); // Unseen (Grey)
                         }
                     }
                 }
@@ -198,7 +256,6 @@ class GraphRenderer:
             self.state_data = np.array([])
 
         self.current_matrix = Matrix44.identity(dtype='f4').tobytes()
-        
         self.set_visibility(True, True)
 
     def set_camera(self, zoom, offset, w, h):
@@ -212,6 +269,20 @@ class GraphRenderer:
         if 'u_show_rejected' in self.prog:
             self.prog['u_show_rejected'].value = 1.0 if show_rejected else 0.0
             self.prog['u_show_unseen'].value = 1.0 if show_unseen else 0.0
+            
+    def set_forest_mode(self, enabled):
+        """Toggles the colorful Connected Component view."""
+        self.forest_mode = enabled
+        if 'u_forest_mode' in self.prog:
+            self.prog['u_forest_mode'].value = 1 if enabled else 0
+        
+        # --- THICKNESS ATTEMPT ---
+        try:
+            # ModernGL exposes this via the context
+            # Note: OpenGL Core Profiles often limit this to 1.0
+            self.ctx.line_width = 3.0 if enabled else 1.0
+        except:
+            pass
 
     def set_mode(self, mode_id):
         if 'u_mode' in self.prog:
@@ -244,7 +315,12 @@ class GraphRenderer:
             self.vao.render(moderngl.LINES, vertices=self.n_edges * 2)
 
 class RuntimeOverlay:
-    """Handles the Pygame UI Overlay during the RUN state."""
+    # ... (Keep existing RuntimeOverlay code)
+    # The overlay code logic for drawing the table also needs the new color logic 
+    # if you want the table text to match the graph colors.
+    # However, for simplicity, I kept the overlay unchanged (it uses text colors). 
+    # If you want the "MST" text in the table to match the edge color, let me know!
+    
     def __init__(self):
         self.settings = {
             'scroll': 0, 
@@ -283,9 +359,8 @@ class RuntimeOverlay:
         curr_idx = context_data['current_idx']
         nodes = context_data['nodes']
         renderer = context_data['renderer']
-        is_paused = context_data.get('is_paused', True) # Get pause state
+        is_paused = context_data.get('is_paused', True)
         
-        # --- HIGHLIGHT CURRENT NODES ---
         if curr_idx < len(edges):
             u, v, _ = edges[curr_idx]
             u_pos = self.project_point(nodes[int(u)], w, h, renderer.offset, renderer.zoom)
@@ -293,7 +368,6 @@ class RuntimeOverlay:
             pygame.draw.circle(surface, COLOR_SELECTING, u_pos, 20, 2)
             pygame.draw.circle(surface, COLOR_SELECTING, v_pos, 20, 2)
 
-        # --- 1. LABELS WITH THRESHOLD CHECK ---
         if context_data['total_vertices'] < TEXT_RENDER_THRESHOLD and len(edges) < TEXT_RENDER_THRESHOLD:
             if self.settings['show_weights']:
                 for i, (u, v, weight) in enumerate(edges):
@@ -333,7 +407,7 @@ class RuntimeOverlay:
                 pygame.draw.rect(surface, (255, 80, 80), bg, 1, border_radius=5)
                 surface.blit(lbl, lbl.get_rect(center=bg.center))
         
-        # --- 2. CONTROLS (Slider + Buttons) ---
+        # --- UI ELEMENTS ---
         pygame.draw.rect(surface, (40, 40, 40), self.slider_rect)
         pygame.draw.rect(surface, (200, 200, 200), self.slider_rect, 2)
         fill_width = int(self.slider_rect.width * context_data['speed_val'])
@@ -342,31 +416,26 @@ class RuntimeOverlay:
         speed_text = "Step-by-Step" if context_data['speed_val'] < 0.05 else f"Speed: {int(context_data['speed_val']*100)}%"
         surface.blit(self.font_main.render(speed_text, True, COLOR_WHITE), (self.slider_rect.x, self.slider_rect.y - 20))
         
-        # PLAY / PAUSE BUTTON
         btn_play = pygame.Rect(self.slider_rect.right + 20, self.slider_rect.y, 40, 30)
         self.interactive_rects['play_pause'] = btn_play
         pygame.draw.rect(surface, (60, 60, 60), btn_play, border_radius=5)
         pygame.draw.rect(surface, (200, 200, 200), btn_play, 1, border_radius=5)
         
         if is_paused:
-            # Draw Green Triangle (Play)
             p1 = (btn_play.x + 12, btn_play.y + 6)
             p2 = (btn_play.x + 12, btn_play.y + 24)
             p3 = (btn_play.x + 30, btn_play.y + 15)
             pygame.draw.polygon(surface, (0, 255, 100), [p1, p2, p3])
         else:
-            # Draw Two Bars (Pause)
             pygame.draw.rect(surface, COLOR_WHITE, (btn_play.x + 11, btn_play.y + 7, 6, 16))
             pygame.draw.rect(surface, COLOR_WHITE, (btn_play.x + 23, btn_play.y + 7, 6, 16))
 
-        # RESET BUTTON
         btn_reset = pygame.Rect(btn_play.right + 10, self.slider_rect.y, 80, 30)
         self.interactive_rects['reset'] = btn_reset
         pygame.draw.rect(surface, (200, 50, 50), btn_reset, border_radius=5)
         rst_txt = self.font_main.render("STOP", True, COLOR_WHITE)
         surface.blit(rst_txt, rst_txt.get_rect(center=btn_reset.center))
 
-        # --- 3. STATS ---
         target = context_data['total_vertices'] - 1
         mst_count = context_data['mst_edges_count']
         status_txt = f"MST Edges: {mst_count} / {target}"
@@ -377,13 +446,15 @@ class RuntimeOverlay:
         weight_txt = f"Total Weight: {context_data['mst_total_weight']:.1f}"
         surface.blit(self.font_mono.render(weight_txt, True, COLOR_PENDING), (20, 35))
         
-        # --- TOGGLES ---
+        # --- NEW: Forest Mode Indicator ---
+        if renderer.forest_mode:
+            surface.blit(self.font_bold.render("Tree View ON (Press F)", True, (255, 100, 255)), (300, 15))
+
         self._draw_checkbox(surface, pygame.Rect(20, 65, 20, 20), "Show IDs", self.settings['show_ids'], 'toggle_ids')
         self._draw_checkbox(surface, pygame.Rect(20, 95, 20, 20), "Show Weights", self.settings['show_weights'], 'toggle_weights')
         self._draw_checkbox(surface, pygame.Rect(160, 65, 20, 20), "Show Rejected (Red)", self.settings['show_deleted'], 'toggle_deleted')
         self._draw_checkbox(surface, pygame.Rect(160, 95, 20, 20), "Show Pending (Grey)", self.settings['show_unseen'], 'toggle_unseen')
 
-        # --- 4. EDGE QUEUE ---
         table_width = 240
         table_x = w - table_width if self.settings['show_table'] else w
         toggle_rect = pygame.Rect(table_x - 30, 10, 30, 30)
@@ -415,7 +486,8 @@ class RuntimeOverlay:
                 prefix = "   "
                 if idx < curr_idx:
                     status = context_data['state_data'][idx*2]
-                    if status > 1.9: bg_color = (255, 215, 0, 80); text_color = (255, 255, 200); prefix = "MST "
+                    if status > 9.0: bg_color = (100, 255, 100, 80); text_color = (255, 255, 200); prefix = "MST "
+                    elif status > 1.9: bg_color = (255, 215, 0, 80); text_color = (255, 255, 200); prefix = "MST "
                     elif status > 0.9: bg_color = (255, 0, 0, 150); text_color = (255, 200, 200); prefix = "DEL "
                 elif idx == curr_idx:
                     bg_color = (0, 255, 100, 50); text_color = COLOR_WHITE; prefix = "-> "
