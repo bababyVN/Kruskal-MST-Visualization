@@ -1,7 +1,7 @@
 import pygame
 import numpy as np
 import tkinter as tk
-from tkinter import filedialog, simpledialog
+from tkinter import filedialog, simpledialog, messagebox
 import math
 from config import *
 
@@ -240,6 +240,7 @@ class GraphEditor:
         elif self.btn_load.collidepoint(pos): self._load_graph(); self.show_save_menu = False
         elif self.btn_gen.collidepoint(pos): self._prompt_random_graph()
 
+    # --- UPDATED: Generation Logic with Choice ---
     def _prompt_random_graph(self):
         try:
             n = simpledialog.askinteger("Random Graph", "Number of Nodes (N):", parent=self.root, minvalue=2, maxvalue=5000, initialvalue=20)
@@ -247,24 +248,38 @@ class GraphEditor:
             max_edges = n * (n - 1) // 2
             m = simpledialog.askinteger("Random Graph", f"Number of Edges (M) [Max {max_edges}]:", parent=self.root, minvalue=1, maxvalue=max_edges, initialvalue=30)
             if not m: return
-            self._generate_random_graph(n, m)
+            
+            # ASK FOR LAYOUT
+            use_random = messagebox.askyesno(
+                "Layout Generation", 
+                "Generate with RANDOM positions?\n\n(Click 'No' for Circular/Topo Layout)"
+            )
+            
+            self._generate_random_graph(n, m, use_random)
         except Exception as e:
             print(f"Generation error: {e}")
 
-    def _generate_random_graph(self, n, m):
-        print(f"Generating {n} nodes, {m} edges...")
+    def _generate_random_graph(self, n, m, use_random):
+        print(f"Generating {n} nodes, {m} edges (Random: {use_random})...")
         self.nodes = []
         self.edges = []
-        area_scale = math.sqrt(n) * 50
-        center_x, center_y = 0, 0
         
-        for i in range(n):
-            x = np.random.uniform(center_x - area_scale, center_x + area_scale)
-            y = np.random.uniform(center_y - area_scale, center_y + area_scale)
-            self.nodes.append({
-                'pos': np.array([x, y], dtype='f4'),
-                'label': str(i)
-            })
+        # 1. Generate Nodes based on layout choice
+        if use_random:
+            area_scale = math.sqrt(n) * 50
+            center_x, center_y = 0, 0
+            for i in range(n):
+                x = np.random.uniform(center_x - area_scale, center_x + area_scale)
+                y = np.random.uniform(center_y - area_scale, center_y + area_scale)
+                self.nodes.append({'pos': np.array([x, y], dtype='f4'), 'label': str(i)})
+        else:
+            # Circular Layout
+            radius = max(200, math.sqrt(n) * 100)
+            for i in range(n):
+                angle = (2 * math.pi * i) / n
+                x = math.cos(angle) * radius
+                y = math.sin(angle) * radius
+                self.nodes.append({'pos': np.array([x, y], dtype='f4'), 'label': str(i)})
             
         existing_edges = set()
         edges_created = 0
@@ -306,6 +321,21 @@ class GraphEditor:
         print(f"Loading {filename}...")
         try:
             with open(filename, 'r') as f: lines = f.readlines()
+            
+            has_coords = False
+            for line in lines:
+                parts = line.strip().split()
+                if len(parts) >= 7:
+                    has_coords = True
+                    break
+            
+            use_random_layout = False
+            if not has_coords and len(lines) > 0:
+                use_random_layout = messagebox.askyesno(
+                    "Layout Selection", 
+                    "No coordinates found in file.\n\nGenerate RANDOM positions?\n(Click 'No' for Circular Layout)"
+                )
+
             new_nodes = []
             new_edges = []
             node_map = {}
@@ -318,7 +348,6 @@ class GraphEditor:
                     new_nodes.append({'pos': pos, 'label': label})
                 return node_map[label]
 
-            has_coords = False
             for line in lines:
                 parts = line.strip().split()
                 if len(parts) < 3: continue
@@ -326,7 +355,6 @@ class GraphEditor:
                 except: continue
                 
                 if len(parts) >= 7:
-                    has_coords = True
                     u = get_node(parts[0], float(parts[3]), float(parts[4]))
                     new_nodes[u]['pos'] = np.array([float(parts[3]), float(parts[4])], dtype='f4')
                     v = get_node(parts[1], float(parts[5]), float(parts[6]))
@@ -341,10 +369,17 @@ class GraphEditor:
             
             if not has_coords:
                 n = len(new_nodes)
-                rad = max(200, math.sqrt(n)*100)
-                for i, node in enumerate(new_nodes):
-                    a = (2*math.pi*i)/n if n>0 else 0
-                    node['pos'] = np.array([math.cos(a)*rad, math.sin(a)*rad], dtype='f4')
+                if use_random_layout:
+                    area_scale = math.sqrt(n) * 50
+                    for node in new_nodes:
+                        rx = np.random.uniform(-area_scale, area_scale)
+                        ry = np.random.uniform(-area_scale, area_scale)
+                        node['pos'] = np.array([rx, ry], dtype='f4')
+                else:
+                    rad = max(200, math.sqrt(n)*100)
+                    for i, node in enumerate(new_nodes):
+                        a = (2*math.pi*i)/n if n>0 else 0
+                        node['pos'] = np.array([math.cos(a)*rad, math.sin(a)*rad], dtype='f4')
 
             self.nodes = new_nodes
             self.edges = new_edges
@@ -375,8 +410,6 @@ class GraphEditor:
                 pygame.draw.circle(self.surface, fill, pos, 14)
                 pygame.draw.circle(self.surface, COLOR_WHITE, pos, 14, 2)
         
-        # --- TEXT RENDERING WITH CULLING ---
-        # Using the constant imported from config.py
         if len(self.nodes) > TEXT_RENDER_THRESHOLD:
             if self.show_ids or self.show_weights:
                 warn_text = "Graph is too big - ID and Weight rendering disabled"

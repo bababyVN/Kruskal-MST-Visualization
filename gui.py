@@ -94,7 +94,6 @@ class CircleRenderer:
             '''
         )
         
-        # --- FIX: Handle 0 Vertices safely ---
         if self.n_verts > 0:
             self.vbo = self.ctx.buffer(vertices.astype('f4').tobytes())
             self.colors = np.zeros((self.n_verts, 3), dtype='f4')
@@ -184,7 +183,6 @@ class GraphRenderer:
             '''
         )
         
-        # --- FIX: Handle 0 Edges safely ---
         if self.n_edges > 0:
             self.vbo = self.ctx.buffer(line_geometry.tobytes())
             self.state_data = np.zeros(n_edges * 2, dtype='f4') 
@@ -201,7 +199,6 @@ class GraphRenderer:
 
         self.current_matrix = Matrix44.identity(dtype='f4').tobytes()
         
-        # Default visibility
         self.set_visibility(True, True)
 
     def set_camera(self, zoom, offset, w, h):
@@ -276,11 +273,6 @@ class RuntimeOverlay:
         self.slider_rect.y = h - 50
 
     def draw(self, surface, context_data):
-        """
-        context_data contains: 
-        sorted_edges, current_idx, mst_edges_count, total_vertices, 
-        mst_total_weight, speed_val, state_data, nodes, labels, renderer
-        """
         surface.fill((0,0,0,0))
         w, h = surface.get_size()
         self.interactive_rects = {} # Reset hitboxes
@@ -290,16 +282,15 @@ class RuntimeOverlay:
         nodes = context_data['nodes']
         renderer = context_data['renderer']
         
-        # --- 1. LABELS (Optimized) ---
-        if context_data['total_vertices'] < 500:
+        # --- 1. LABELS WITH THRESHOLD CHECK ---
+        # UPDATED: Use the config constant instead of hardcoded 500
+        if context_data['total_vertices'] < TEXT_RENDER_THRESHOLD:
             if self.settings['show_weights']:
                 for i, (u, v, weight) in enumerate(edges):
-                    # Visibility Check
                     should_draw = True
                     if i < curr_idx:
                         status = context_data['state_data'][i*2]
-                        if status > 0.9 and status < 1.9 and not self.settings['show_deleted']: 
-                            should_draw = False
+                        if status > 0.9 and status < 1.9 and not self.settings['show_deleted']: should_draw = False
                     else:
                         if not self.settings['show_unseen']: should_draw = False
                     
@@ -322,6 +313,19 @@ class RuntimeOverlay:
                         txt = self.font_bold.render(lbl, True, COLOR_WHITE)
                         rect = txt.get_rect(center=(sx, sy))
                         surface.blit(txt, rect)
+        
+        # --- SHOW WARNING IF GRAPH TOO BIG ---
+        # UPDATED: Display warning box if user tries to enable labels on large graph
+        else:
+            if self.settings['show_ids'] or self.settings['show_weights']:
+                warn_text = "Graph is too big - ID and Weight rendering disabled"
+                lbl = self.font_bold.render(warn_text, True, (255, 80, 80))
+                bg = pygame.Rect(0, 0, lbl.get_width() + 20, lbl.get_height() + 10)
+                bg.center = (w // 2, h - 80) # Position slightly above the slider
+                
+                pygame.draw.rect(surface, (30, 30, 30), bg, border_radius=5)
+                pygame.draw.rect(surface, (255, 80, 80), bg, 1, border_radius=5)
+                surface.blit(lbl, lbl.get_rect(center=bg.center))
         
         # --- 2. SLIDER ---
         pygame.draw.rect(surface, (40, 40, 40), self.slider_rect)
