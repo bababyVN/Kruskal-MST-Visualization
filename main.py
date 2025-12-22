@@ -1,13 +1,20 @@
+import sys
 import pygame
 import moderngl
 import numpy as np
+
+# Local Modules
 import logic
 import gui
 import editor
-import sys
 from config import *
 
 class KruskalApp:
+    """
+    Main Application Class.
+    Manages the primary Event Loop, State Switching (Editor <-> Run),
+    and Integration between Logic (CPU) and Rendering (GPU).
+    """
     def __init__(self):
         pygame.init()
         pygame.display.gl_set_attribute(pygame.GL_CONTEXT_MAJOR_VERSION, 3)

@@ -37,6 +37,7 @@ A high-performance, interactive visualization tool for Kruskal's Minimum Spannin
 * **Left Arrow**: Step backward / Undo.
 * **Right Arrow**: Step forward / Resume.
 * **R**: Return to **Editor Mode**.
+* **F**: Toggle **Tree View**.
 * **UI Toggles**: Toggle visibility of IDs, weights, and table data.
 
 ## Project Structure

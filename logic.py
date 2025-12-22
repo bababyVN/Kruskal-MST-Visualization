@@ -1,8 +1,16 @@
 import numpy as np
 from numba import njit
 
+# ==========================================
+#      CORE LOGIC (CPU / JIT COMPILED)
+# ==========================================
+
 @njit
 def find(parent, i):
+    """
+    Path Compression: Optimizes the DSU structure by pointing nodes directly to the root.
+    Runs at C-speed thanks to @njit.
+    """
     path = []
     root = i
     while parent[root] != root:
@@ -14,8 +22,13 @@ def find(parent, i):
 
 @njit
 def union(parent, rank, x, y):
+    """
+    Union by Rank: Merges two sets if they are disjoint.
+    Returns: (True, NewRootID) if merged, (False, ExistingRootID) if loop detected.
+    """
     root_x = find(parent, x)
     root_y = find(parent, y)
+    
     if root_x != root_y:
         if rank[root_x] < rank[root_y]:
             parent[root_x] = root_y
@@ -27,10 +40,12 @@ def union(parent, rank, x, y):
             parent[root_y] = root_x
             rank[root_x] += 1
             return True, root_x
+            
     return False, root_x
 
 @njit
 def get_all_roots(parent):
+    """Utility to retrieve the current root for every node in the graph."""
     roots = np.empty_like(parent)
     for i in range(len(parent)):
         roots[i] = find(parent, i)
@@ -38,6 +53,7 @@ def get_all_roots(parent):
 
 @njit
 def get_node_statuses(parent, rank):
+    """Determines visual status of nodes (0.0 = Default, 1.0 = Active/Merged)."""
     status = np.zeros(len(parent), dtype=np.float32)
     for i in range(len(parent)):
         if parent[i] != i or rank[i] > 0:
@@ -46,6 +62,14 @@ def get_node_statuses(parent, rank):
 
 @njit
 def process_batch(sorted_edges, start_idx, limit, parent, rank, state_data, current_mst, target_mst):
+    """
+    High-Performance Step Logic:
+    Processes 'limit' edges in one go. Directly updates the 'state_data' GPU buffer array.
+    
+    Parameters:
+      state_data: Direct reference to the GPU VBO (Vertex Buffer Object) memory.
+      current_mst: Current count of edges in the MST (for early stopping).
+    """
     processed_count = 0
     mst_added_count = 0
     total_weight = 0.0
@@ -60,58 +84,45 @@ def process_batch(sorted_edges, start_idx, limit, parent, rank, state_data, curr
         idx_in_buffer = (start_idx + i) * 2
         
         if is_merged:
-            # Set to generic MST state initially (will be colored by refresh)
-            # Using 10.0 + root immediately helps, but roots change!
+            # MST EDGE: Store (10.0 + RootID) for Forest Mode coloring
             val = 10.0 + float(root_val)
             state_data[idx_in_buffer] = val
             state_data[idx_in_buffer+1] = val
             mst_added_count += 1
             total_weight += w
         else:
+            # REJECTED EDGE: Store 1.0
             state_data[idx_in_buffer] = 1.0
             state_data[idx_in_buffer+1] = 1.0
             
         processed_count += 1
         
+        # Optimization: Stop immediately if MST is complete (V-1 edges)
         if current_mst + mst_added_count >= target_mst:
             break
             
     return processed_count, mst_added_count, total_weight
 
-# --- NEW FUNCTION ---
 @njit
 def refresh_mst_colors(sorted_edges, limit, parent, state_data):
     """
-    Re-calculates the root ID for ALL MST edges up to the current limit.
-    This ensures edges change color when their tree merges with another tree.
+    Visual Consistency Update:
+    Re-calculates the component Root ID for all previously found MST edges.
+    Required because root IDs change as smaller trees merge into larger ones.
     """
     for i in range(limit):
         idx = i * 2
-        # Check if this edge is part of MST (Status >= 2.0)
+        # If edge is MST (Status >= 2.0), update its color based on current root
         if state_data[idx] >= 2.0:
             u = int(sorted_edges[i, 0])
-            # Find the CURRENT root of this edge's component
             current_root = find(parent, u)
-            # Update the color ID
+            
             val = 10.0 + float(current_root)
             state_data[idx] = val
             state_data[idx+1] = val
 
-@njit
-def fast_forward_dsu(sorted_edges, limit, parent, rank):
-    mst_added_count = 0
-    total_weight = 0.0
-    
-    for i in range(limit):
-        u, v, w = sorted_edges[i]
-        is_merged, _ = union(parent, rank, int(u), int(v))
-        if is_merged:
-            mst_added_count += 1
-            total_weight += w
-            
-    return mst_added_count, total_weight
-
 def prepare_data(n_vertices, n_edges):
+    """Generates massive random datasets for stress testing."""
     print(f"Generating Large Scale Data: {n_vertices} Vertices, {n_edges} Edges...")
     
     scale_factor = 2000.0 
@@ -131,9 +142,11 @@ def prepare_data(n_vertices, n_edges):
     
     edges = np.column_stack((u, v, weights)).astype(np.float64)
     
+    # Critical: Sort edges by weight for Kruskal's Algorithm
     sorted_indices = np.argsort(edges[:, 2])
     sorted_edges = edges[sorted_indices]
     
+    # Build Geometry for GPU (Interleaved start/end points)
     u_sorted = sorted_edges[:, 0].astype(int)
     v_sorted = sorted_edges[:, 1].astype(int)
     start_points = vertices[u_sorted]

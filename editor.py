@@ -1,11 +1,18 @@
-import pygame
-import numpy as np
+import math
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox
-import math
+import pygame
+import numpy as np
 from config import *
 
 class GraphEditor:
+    """
+    Manages Graph Creation, Editing, and File I/O.
+    Features:
+    - Interactive Tools (Add/Move/Delete Nodes & Edges).
+    - Procedural Generation (Random, Grid/Maze).
+    - Camera Control (Zoom, Pan, Auto-Fit).
+    """
     def __init__(self, width, height):
         self.width = width
         self.height = height
@@ -14,9 +21,7 @@ class GraphEditor:
         # Data
         self.nodes = [] 
         self.edges = [] 
-        
-        # Rendering State
-        self.dirty = True  # Flag to tell Main to update GPU buffers
+        self.dirty = True 
         
         # Camera
         self.offset = np.array([width/2, height/2], dtype='f4')
@@ -38,16 +43,13 @@ class GraphEditor:
         self.input_buffer = ""
         self.show_ids = True
         self.show_weights = True
-        
-        # Save Popup
         self.show_save_menu = False
         
-        # Assets
+        # UI Assets
         self.font = pygame.font.SysFont("Arial", 14)
         self.bold_font = pygame.font.SysFont("Arial", 14, bold=True)
         self.icon_font = pygame.font.SysFont("Segoe UI Symbol", 20) 
         
-        # Toolbar Layout
         self.toolbar_h = 50
         self.tools = [
             {'id': TOOL_SELECT, 'icon': "➤", 'tip': "Move"},
@@ -57,19 +59,16 @@ class GraphEditor:
             {'id': TOOL_PAN,    'icon': "✋", 'tip': "Pan View"}
         ]
         
-        # Buttons
+        # UI Layout
         btn_y = 10
         self.btn_run = pygame.Rect(width - 70, btn_y, 60, 30)
         self.btn_load = pygame.Rect(width - 140, btn_y, 60, 30)
         self.btn_save = pygame.Rect(width - 210, btn_y, 60, 30)
-        
         self.save_menu_rect = pygame.Rect(width - 210, btn_y + 35, 80, 60)
         self.btn_save_xy = pygame.Rect(self.save_menu_rect.x, self.save_menu_rect.y, 80, 30)
         self.btn_save_topo = pygame.Rect(self.save_menu_rect.x, self.save_menu_rect.y + 30, 80, 30)
-        
         self.btn_toggle_ids = pygame.Rect(width - 300, 12, 60, 26)
         self.btn_toggle_w = pygame.Rect(width - 370, 12, 60, 26)
-        
         self.btn_gen = pygame.Rect(width - 440, 12, 60, 26)
         
         self.root = tk.Tk()
@@ -82,8 +81,8 @@ class GraphEditor:
     def world_to_screen(self, pos):
         return (np.array(pos, dtype='f4') * self.zoom) + self.offset
 
-    # --- NEW: Auto-Fit Camera ---
     def fit_to_screen(self):
+        """Calculates bounding box of all nodes and centers camera."""
         if not self.nodes:
             self.offset = np.array([self.width/2, self.height/2], dtype='f4')
             self.zoom = 1.0
@@ -271,7 +270,6 @@ class GraphEditor:
             n = simpledialog.askinteger("Random Graph", "Number of Nodes (N):", parent=self.root, minvalue=4, maxvalue=10000, initialvalue=50)
             if not n: return
             
-            # Ask Type: Grid vs Random
             is_grid = messagebox.askyesno(
                 "Graph Type", 
                 "Do you want to generate a GRID (Maze) graph?\n\n(Yes = Grid, No = Random Points)"
@@ -284,15 +282,13 @@ class GraphEditor:
                 m = simpledialog.askinteger("Random Graph", f"Number of Edges (M) [Max {max_edges}]:", parent=self.root, minvalue=1, maxvalue=max_edges, initialvalue=n*2)
                 if not m: return
                 
-                # Layout question
                 use_random_layout = messagebox.askyesno("Layout", "Use Random Layout?\n(No = Circular)")
                 self._generate_random_graph(n, m, use_random_layout)
         except Exception as e:
             print(f"Generation error: {e}")
 
-    # --- NEW: Grid Generator for Mazes ---
     def _generate_grid_graph(self, total_nodes):
-        # Calculate dimensions
+        """Generates a perfect grid graph, ideal for maze generation."""
         side = int(math.sqrt(total_nodes))
         rows, cols = side, side
         
@@ -300,9 +296,8 @@ class GraphEditor:
         self.edges = []
         
         print(f"Generating Grid: {cols}x{rows}")
-        
         spacing = 60
-        # Create Nodes
+        
         for r in range(rows):
             for c in range(cols):
                 self.nodes.append({
@@ -310,18 +305,13 @@ class GraphEditor:
                     'label': str(len(self.nodes))
                 })
         
-        # Create Edges (Right and Down)
         for r in range(rows):
             for c in range(cols):
                 u = r * cols + c
-                
-                # Right neighbor
                 if c < cols - 1:
                     v = r * cols + (c + 1)
                     w = np.random.uniform(1, 100)
                     self.edges.append({'u': u, 'v': v, 'weight': w})
-                
-                # Bottom neighbor
                 if r < rows - 1:
                     v = (r + 1) * cols + c
                     w = np.random.uniform(1, 100)

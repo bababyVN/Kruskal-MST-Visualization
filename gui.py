@@ -1,33 +1,29 @@
+import math
+import colorsys
+import pygame
 import moderngl
 import numpy as np
 from pyrr import Matrix44
-import pygame
-import math
-import colorsys
 from config import *
 
-# --- HELPER: CPU-Side Color Generator (Must match Shader Logic) ---
+# ==========================================
+#        RENDERING & SHADERS (GPU)
+# ==========================================
+
 def get_color_for_id(n):
     """
-    Generates a color for a given float ID using Golden Ratio Hue.
-    Matches the GLSL 'hsv2rgb' logic in the shader below.
+    CPU-Side Color Generator.
+    MUST match the 'hash_color' logic in the Fragment Shader to ensure
+    Nodes (CPU) and Edges (GPU) have matching colors in Forest Mode.
     """
-    # Recover the integer Root ID (logic.py adds 10.0)
     root_id = float(n) - 10.0
-    
-    # Golden Ratio Conjugate to spread hues evenly
-    # This math is stable across CPU/GPU
-    hue = (root_id * 0.61803398875) % 1.0
-    
-    # Fixed Saturation/Value for nice neon colors
+    hue = (root_id * 0.61803398875) % 1.0 # Golden Ratio Hue
     saturation = 0.75
     value = 0.95
-    
-    # Convert to RGB
     return colorsys.hsv_to_rgb(hue, saturation, value)
 
 class TextureRenderer:
-    """Renders the UI Surface (Table/Sliders) overlay."""
+    """Renders the Pygame UI Surface (Text/Buttons) as an OpenGL Texture."""
     def __init__(self, ctx):
         self.ctx = ctx
         self.prog = self.ctx.program(
@@ -70,11 +66,10 @@ class TextureRenderer:
         self.ctx.disable(moderngl.BLEND)
 
 class CircleRenderer:
-    """Draws vertices using ModernGL points."""
+    """Renders Nodes using Hardware Instancing (Point Sprites)."""
     def __init__(self, ctx, vertices):
         self.ctx = ctx
         self.n_verts = len(vertices)
-        
         self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
         
         self.prog = self.ctx.program(
@@ -128,19 +123,13 @@ class CircleRenderer:
                 (self.status_vbo, '1f', 'in_status')
             ])
 
-            # --- COLOR SYNC ---
-            # Generate the EXACT same palette Python-side
+            # Pre-calculate palette for 0..N roots to sync with GPU colors
             self.palette = np.zeros((self.n_verts + 1, 3), dtype='f4')
             for i in range(self.n_verts + 1):
-                # +10.0 matches the offset logic in logic.py
                 c = get_color_for_id(10.0 + float(i)) 
                 self.palette[i] = c
-                
         else:
-            self.vbo = None
-            self.color_vbo = None
-            self.status_vbo = None
-            self.vao = None
+            self.vbo, self.color_vbo, self.status_vbo, self.vao = None, None, None, None
             self.palette = np.zeros((1, 3), dtype='f4')
 
     def update_state(self, roots, statuses):
@@ -159,10 +148,13 @@ class CircleRenderer:
             self.vao.render(moderngl.POINTS)
 
 class GraphRenderer:
+    """
+    Renders Edges using ModernGL.
+    Handles 'Forest Mode' logic entirely on the GPU via Fragment Shader.
+    """
     def __init__(self, ctx, n_edges, line_geometry):
         self.ctx = ctx
         self.n_edges = n_edges
-        
         self.zoom = 1.0
         self.offset = np.array([0.0, 0.0], dtype='f4')
         self.width = float(SCREEN_SIZE[0])
@@ -199,34 +191,25 @@ class GraphRenderer:
 
                 void main() {
                     if (u_mode == 1) {
-                        // EDITOR MODE: Solid Lines
-                        f_color = vec4(0.4, 0.4, 0.5, 1.0);
+                        f_color = vec4(0.4, 0.4, 0.5, 1.0); // Editor Mode: Solid Lines
                     } else {
-                        // SIMULATION MODE
-                        
+                        // Simulation Mode State Logic
                         if (v_state > 9.5) { 
                             // --- MST EDGE (With Component ID) ---
                             if (u_forest_mode == 1) {
-                                // Extract Root ID
                                 float root_id = v_state - 10.0;
-                                
-                                // Golden Ratio Hue (Must match Python!)
-                                float hue = fract(root_id * 0.61803398875);
-                                
-                                // Fixed Saturation/Value (Matches Python)
+                                float hue = fract(root_id * 0.61803398875); // Golden Ratio Hue
                                 vec3 c = hsv2rgb(vec3(hue, 0.75, 0.95));
-                                
                                 f_color = vec4(c, 1.0);
                             } else {
-                                // Standard Gold
-                                f_color = vec4(1.0, 0.8, 0.0, 1.0); 
+                                f_color = vec4(1.0, 0.8, 0.0, 1.0); // Standard Gold
                             }
                         }
                         else if (v_state > 2.9) {
                             f_color = vec4(0.0, 1.0, 0.2, 1.0); // Selecting (Green)
                         } 
                         else if (v_state > 1.9) {
-                            f_color = vec4(1.0, 0.8, 0.0, 1.0); 
+                            f_color = vec4(1.0, 0.8, 0.0, 1.0); // Fallback MST
                         } 
                         else if (v_state > 0.9) {
                             if (u_show_rejected < 0.5) discard;
@@ -250,9 +233,7 @@ class GraphRenderer:
                 (self.state_vbo, '1f', 'in_state')
             ])
         else:
-            self.vbo = None
-            self.state_vbo = None
-            self.vao = None
+            self.vbo, self.state_vbo, self.vao = None, None, None
             self.state_data = np.array([])
 
         self.current_matrix = Matrix44.identity(dtype='f4').tobytes()
@@ -271,15 +252,10 @@ class GraphRenderer:
             self.prog['u_show_unseen'].value = 1.0 if show_unseen else 0.0
             
     def set_forest_mode(self, enabled):
-        """Toggles the colorful Connected Component view."""
         self.forest_mode = enabled
         if 'u_forest_mode' in self.prog:
             self.prog['u_forest_mode'].value = 1 if enabled else 0
-        
-        # --- THICKNESS ATTEMPT ---
         try:
-            # ModernGL exposes this via the context
-            # Note: OpenGL Core Profiles often limit this to 1.0
             self.ctx.line_width = 3.0 if enabled else 1.0
         except:
             pass
@@ -315,26 +291,16 @@ class GraphRenderer:
             self.vao.render(moderngl.LINES, vertices=self.n_edges * 2)
 
 class RuntimeOverlay:
-    # ... (Keep existing RuntimeOverlay code)
-    # The overlay code logic for drawing the table also needs the new color logic 
-    # if you want the table text to match the graph colors.
-    # However, for simplicity, I kept the overlay unchanged (it uses text colors). 
-    # If you want the "MST" text in the table to match the edge color, let me know!
-    
+    """Handles the Pygame UI Overlay (Stats, Table, Buttons)."""
     def __init__(self):
         self.settings = {
-            'scroll': 0, 
-            'show_table': True, 
-            'show_ids': True, 
-            'show_weights': True,
-            'show_deleted': True, 
-            'show_unseen': True
+            'scroll': 0, 'show_table': True, 'show_ids': True, 
+            'show_weights': True, 'show_deleted': True, 'show_unseen': True
         }
         self.slider_rect = pygame.Rect(20, SCREEN_SIZE[1] - 50, 200, 30)
         self.interactive_rects = {}
         self.table_hits = [] 
         
-        # Fonts
         self.font_main = pygame.font.SysFont("Arial", 14)
         self.font_bold = pygame.font.SysFont("Arial", 12, bold=True)
         self.font_small = pygame.font.SysFont("Arial", 11)
@@ -361,6 +327,7 @@ class RuntimeOverlay:
         renderer = context_data['renderer']
         is_paused = context_data.get('is_paused', True)
         
+        # Highlight Active Nodes
         if curr_idx < len(edges):
             u, v, _ = edges[curr_idx]
             u_pos = self.project_point(nodes[int(u)], w, h, renderer.offset, renderer.zoom)
@@ -368,6 +335,7 @@ class RuntimeOverlay:
             pygame.draw.circle(surface, COLOR_SELECTING, u_pos, 20, 2)
             pygame.draw.circle(surface, COLOR_SELECTING, v_pos, 20, 2)
 
+        # Draw Labels (Optimized for performance)
         if context_data['total_vertices'] < TEXT_RENDER_THRESHOLD and len(edges) < TEXT_RENDER_THRESHOLD:
             if self.settings['show_weights']:
                 for i, (u, v, weight) in enumerate(edges):
@@ -407,7 +375,7 @@ class RuntimeOverlay:
                 pygame.draw.rect(surface, (255, 80, 80), bg, 1, border_radius=5)
                 surface.blit(lbl, lbl.get_rect(center=bg.center))
         
-        # --- UI ELEMENTS ---
+        # Controls
         pygame.draw.rect(surface, (40, 40, 40), self.slider_rect)
         pygame.draw.rect(surface, (200, 200, 200), self.slider_rect, 2)
         fill_width = int(self.slider_rect.width * context_data['speed_val'])
@@ -416,26 +384,26 @@ class RuntimeOverlay:
         speed_text = "Step-by-Step" if context_data['speed_val'] < 0.05 else f"Speed: {int(context_data['speed_val']*100)}%"
         surface.blit(self.font_main.render(speed_text, True, COLOR_WHITE), (self.slider_rect.x, self.slider_rect.y - 20))
         
+        # Play/Pause
         btn_play = pygame.Rect(self.slider_rect.right + 20, self.slider_rect.y, 40, 30)
         self.interactive_rects['play_pause'] = btn_play
         pygame.draw.rect(surface, (60, 60, 60), btn_play, border_radius=5)
         pygame.draw.rect(surface, (200, 200, 200), btn_play, 1, border_radius=5)
         
         if is_paused:
-            p1 = (btn_play.x + 12, btn_play.y + 6)
-            p2 = (btn_play.x + 12, btn_play.y + 24)
-            p3 = (btn_play.x + 30, btn_play.y + 15)
-            pygame.draw.polygon(surface, (0, 255, 100), [p1, p2, p3])
+            pygame.draw.polygon(surface, (0, 255, 100), [(btn_play.x + 12, btn_play.y + 6), (btn_play.x + 12, btn_play.y + 24), (btn_play.x + 30, btn_play.y + 15)])
         else:
             pygame.draw.rect(surface, COLOR_WHITE, (btn_play.x + 11, btn_play.y + 7, 6, 16))
             pygame.draw.rect(surface, COLOR_WHITE, (btn_play.x + 23, btn_play.y + 7, 6, 16))
 
+        # Reset
         btn_reset = pygame.Rect(btn_play.right + 10, self.slider_rect.y, 80, 30)
         self.interactive_rects['reset'] = btn_reset
         pygame.draw.rect(surface, (200, 50, 50), btn_reset, border_radius=5)
         rst_txt = self.font_main.render("STOP", True, COLOR_WHITE)
         surface.blit(rst_txt, rst_txt.get_rect(center=btn_reset.center))
 
+        # Stats
         target = context_data['total_vertices'] - 1
         mst_count = context_data['mst_edges_count']
         status_txt = f"MST Edges: {mst_count} / {target}"
@@ -446,15 +414,16 @@ class RuntimeOverlay:
         weight_txt = f"Total Weight: {context_data['mst_total_weight']:.1f}"
         surface.blit(self.font_mono.render(weight_txt, True, COLOR_PENDING), (20, 35))
         
-        # --- NEW: Forest Mode Indicator ---
         if renderer.forest_mode:
             surface.blit(self.font_bold.render("Tree View ON (Press F)", True, (255, 100, 255)), (300, 15))
 
+        # Toggles
         self._draw_checkbox(surface, pygame.Rect(20, 65, 20, 20), "Show IDs", self.settings['show_ids'], 'toggle_ids')
         self._draw_checkbox(surface, pygame.Rect(20, 95, 20, 20), "Show Weights", self.settings['show_weights'], 'toggle_weights')
         self._draw_checkbox(surface, pygame.Rect(160, 65, 20, 20), "Show Rejected (Red)", self.settings['show_deleted'], 'toggle_deleted')
         self._draw_checkbox(surface, pygame.Rect(160, 95, 20, 20), "Show Pending (Grey)", self.settings['show_unseen'], 'toggle_unseen')
 
+        # Table
         table_width = 240
         table_x = w - table_width if self.settings['show_table'] else w
         toggle_rect = pygame.Rect(table_x - 30, 10, 30, 30)
