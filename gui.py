@@ -60,7 +60,7 @@ class CircleRenderer:
                 #version 330
                 in vec2 in_vert;
                 in vec3 in_color;
-                in float in_status; // 0.0 = Unselected, 1.0 = Selected
+                in float in_status; // 0.0 = Unselected, 1.0 = Selected (MST)
                 out vec3 v_color;
                 
                 uniform mat4 u_transform;
@@ -70,15 +70,20 @@ class CircleRenderer:
                 void main() {
                     gl_Position = u_transform * vec4(in_vert, 0.0, 1.0);
                     
-                    // Scale point size with zoom, clamped
-                    float size = u_base_size * u_zoom;
-                    float final_size = clamp(size, 2.0, 50.0); 
-                    
-                    gl_PointSize = final_size;
+                    float raw_size = u_base_size * u_zoom;
                     
                     if (in_status > 0.5) {
+                        // --- SELECTED (MST) NODE ---
+                        // Multiply size by 2.0 so it grows faster
+                        // Allow it to grow very large (up to 120.0)
+                        float s = raw_size * 2.0;
+                        gl_PointSize = clamp(s, 6.0, 60.0);
                         v_color = in_color;
                     } else {
+                        // --- UNSELECTED NODE ---
+                        // Keep strict limit on how big these can get (max 30.0)
+                        // This ensures they always look "background" compared to MST nodes
+                        gl_PointSize = clamp(raw_size, 2.0, 20.0);
                         v_color = vec3(0.0, 0.5, 1.0); 
                     }
                 }
