@@ -1,22 +1,8 @@
 import pygame
 import numpy as np
-import math
 import tkinter as tk
 from tkinter import filedialog
-
-# --- CONSTANTS ---
-TOOL_SELECT = 0
-TOOL_POINT = 1
-TOOL_EDGE = 2
-TOOL_DELETE = 3
-TOOL_PAN = 4
-
-COLOR_BG = (20, 24, 28)
-COLOR_UI = (45, 50, 55)
-COLOR_UI_HOVER = (60, 65, 70)
-COLOR_UI_ACTIVE = (0, 120, 215)
-COLOR_ACCENT = (0, 180, 80)
-COLOR_TEXT = (220, 220, 220)
+from config import *
 
 class GraphEditor:
     def __init__(self, width, height):
@@ -68,8 +54,8 @@ class GraphEditor:
         self.btn_toggle_w = pygame.Rect(width - 160, 12, 80, 26)
         self.btn_run = pygame.Rect(width - 70, 10, 60, 30)
         
-        root = tk.Tk()
-        root.withdraw()
+        self.root = tk.Tk()
+        self.root.withdraw()
 
     # --- COORDINATES ---
     def screen_to_world(self, pos):
@@ -145,10 +131,7 @@ class GraphEditor:
         elif event.type == pygame.MOUSEWHEEL:
             zoom_factor = 1.1 if event.y > 0 else 0.9
             world_before = self.screen_to_world(m_pos)
-            
-            # --- INFINITE ZOOM ---
             self.zoom = max(0.0001, self.zoom * zoom_factor)
-            
             self.offset += (np.array(m_pos) - self.world_to_screen(world_before))
 
         elif event.type == pygame.KEYDOWN:
@@ -217,12 +200,12 @@ class GraphEditor:
             is_sel = (self.selection and self.selection['type']=='edge' and self.selection['index']==i)
             col = COLOR_ACCENT if is_sel else (100, 100, 120)
             pygame.draw.line(self.surface, col, u, v, 4 if is_sel else 2)
-            if self.show_weights: self._draw_label(((u[0]+v[0])//2, (u[1]+v[1])//2), str(int(e['weight'])), (0,255,255))
+            if self.show_weights: self._draw_label(((u[0]+v[0])//2, (u[1]+v[1])//2), str(int(e['weight'])), COLOR_PENDING)
 
         # Dragging Line
         if self.current_tool == TOOL_EDGE and self.drag_edge_start is not None:
             u = tuple(self.world_to_screen(self.nodes[self.drag_edge_start]['pos']).astype(int))
-            pygame.draw.line(self.surface, (100, 255, 100), u, pygame.mouse.get_pos(), 2)
+            pygame.draw.line(self.surface, COLOR_SELECTING, u, pygame.mouse.get_pos(), 2)
 
         # Nodes
         for i, n in enumerate(self.nodes):
@@ -230,7 +213,7 @@ class GraphEditor:
             is_sel = (self.selection and self.selection['type']=='node' and self.selection['index']==i)
             fill = COLOR_ACCENT if is_sel else (60, 120, 200)
             pygame.draw.circle(self.surface, fill, pos, 14)
-            pygame.draw.circle(self.surface, (255,255,255), pos, 14, 2)
+            pygame.draw.circle(self.surface, COLOR_WHITE, pos, 14, 2)
             if self.show_ids: self._draw_text_centered(n['label'], pos)
 
         self._draw_ui()
@@ -245,7 +228,7 @@ class GraphEditor:
         self.surface.blit(lbl, lbl.get_rect(center=pos))
 
     def _draw_text_centered(self, text, pos):
-        lbl = self.bold_font.render(text, True, (255, 255, 255))
+        lbl = self.bold_font.render(text, True, COLOR_WHITE)
         self.surface.blit(lbl, lbl.get_rect(center=pos))
 
     def _draw_ui(self):
@@ -261,13 +244,13 @@ class GraphEditor:
         
         hover = self.btn_run.collidepoint(pygame.mouse.get_pos())
         pygame.draw.rect(self.surface, (0, 200, 100) if hover else (0, 160, 80), self.btn_run, border_radius=4)
-        run_lbl = self.bold_font.render("RUN ▶", True, (255, 255, 255))
+        run_lbl = self.bold_font.render("RUN ▶", True, COLOR_WHITE)
         self.surface.blit(run_lbl, run_lbl.get_rect(center=self.btn_run.center))
 
     def _draw_btn(self, rect, text, state):
         col = COLOR_UI_ACTIVE if state else (60, 60, 60)
         pygame.draw.rect(self.surface, col, rect, border_radius=4)
-        txt = self.font.render(text, True, (255,255,255))
+        txt = self.font.render(text, True, COLOR_WHITE)
         self.surface.blit(txt, txt.get_rect(center=rect.center))
 
     def _draw_inspector(self):
@@ -280,19 +263,18 @@ class GraphEditor:
         self.surface.blit(title, (panel_rect.x+10, panel_rect.y+10))
         
         box_rect = pygame.Rect(panel_rect.x+70, panel_rect.y+40, 130, 30)
-        box_col = (255, 255, 255) if self.editing_text else (200, 200, 200)
+        box_col = COLOR_WHITE if self.editing_text else (200, 200, 200)
         pygame.draw.rect(self.surface, (30, 30, 30), box_rect)
         pygame.draw.rect(self.surface, box_col, box_rect, 1)
         
         display_text = self.input_buffer if self.editing_text else \
             (self.nodes[self.selection['index']]['label'] if self.selection['type']=='node' else str(int(self.edges[self.selection['index']]['weight'])))
-        txt_surf = self.font.render(display_text, True, (255, 255, 255))
+        txt_surf = self.font.render(display_text, True, COLOR_WHITE)
         self.surface.blit(txt_surf, (box_rect.x+5, box_rect.y+7))
 
     def export_data(self):
         if not self.nodes: return None, None, None, None
         
-        # Export Raw World Positions
         positions = np.array([n['pos'] for n in self.nodes], dtype='f4')
         edge_list = [[e['u'], e['v'], e['weight']] for e in self.edges]
         edges_array = np.array(edge_list, dtype=np.float64) if edge_list else np.array([])

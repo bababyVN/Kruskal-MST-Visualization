@@ -92,9 +92,7 @@ def fast_forward_dsu(sorted_edges, limit, parent, rank):
 def prepare_data(n_vertices, n_edges):
     print(f"Generating Large Scale Data: {n_vertices} Vertices...")
     
-    # Scale up coordinates for the new Camera System
     scale_factor = 2000.0 
-    
     radius = np.sqrt(np.random.uniform(0, 1, n_vertices)) * scale_factor
     angle = np.random.uniform(0, 2 * np.pi, n_vertices)
     x = radius * np.cos(angle)
