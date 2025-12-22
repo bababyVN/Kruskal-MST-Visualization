@@ -20,10 +20,15 @@ class KruskalApp:
         self.ctx = moderngl.create_context()
         self.graph_editor = editor.GraphEditor(*SCREEN_SIZE)
         self.ui_renderer = gui.TextureRenderer(self.ctx)
-        self.run_overlay = gui.RuntimeOverlay() # New Overlay Manager
+        self.run_overlay = gui.RuntimeOverlay()
         
+        # Sim Renderers (Used in Run Mode)
         self.graph_renderer = None
         self.circle_renderer = None
+        
+        # Editor Renderers (Used for high-performance Editor)
+        self.edit_graph_renderer = None
+        self.edit_circle_renderer = None
         
         # State
         self.current_state = STATE_EDIT
@@ -52,8 +57,6 @@ class KruskalApp:
     def switch_to_run(self, limit_test=False):
         self.run_zoom = self.graph_editor.zoom
         self.run_offset = self.graph_editor.offset.copy()
-        
-        # Reset State
         self.run_overlay.settings['scroll'] = 0
         self.mst_total_weight = 0.0 
         
@@ -80,7 +83,6 @@ class KruskalApp:
             if raw_edges is not None and len(raw_edges) > 0:
                 self.nodes = raw_nodes
                 self.labels = raw_labels
-                
                 sorted_indices = np.argsort(raw_edges[:, 2])
                 self.sorted_edges = raw_edges[sorted_indices]
                 sorted_geom = np.empty_like(geom)
@@ -122,18 +124,18 @@ class KruskalApp:
                 self.ctx.viewport = (0, 0, event.w, event.h)
                 if self.graph_renderer: 
                     self.graph_renderer.set_camera(self.run_zoom, self.run_offset, event.w, event.h)
+                if self.edit_graph_renderer:
+                    self.edit_graph_renderer.set_camera(self.graph_editor.zoom, self.graph_editor.offset, event.w, event.h)
                 self.ui_surface = pygame.Surface((event.w, event.h), pygame.SRCALPHA)
                 self.run_overlay.handle_resize(event.w, event.h)
 
             if self.current_state == STATE_EDIT:
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_RETURN: self.switch_to_run()
+                    if event.key == pygame.K_RETURN and not self.graph_editor.editing_text: self.switch_to_run()
                     elif event.key == pygame.K_t: self.switch_to_run(limit_test=True)
-                
                 if self.graph_editor.trigger_run:
                     self.switch_to_run()
                     self.graph_editor.trigger_run = False
-                    
                 self.graph_editor.handle_event(event)
 
             elif self.current_state == STATE_RUN:
@@ -142,23 +144,16 @@ class KruskalApp:
                     if self.run_overlay.slider_rect.collidepoint(event.pos): clicked_ui = True
                     for r in self.run_overlay.interactive_rects.values():
                         if r.collidepoint(event.pos): clicked_ui = True
-                    
                     if event.button == 1:
                         if clicked_ui:
                             rects = self.run_overlay.interactive_rects
                             settings = self.run_overlay.settings
-                            if 'reset' in rects and rects['reset'].collidepoint(event.pos): 
-                                self.current_state = STATE_EDIT
-                            elif 'table_toggle' in rects and rects['table_toggle'].collidepoint(event.pos): 
-                                settings['show_table'] = not settings['show_table']
-                            elif 'toggle_ids' in rects and rects['toggle_ids'].collidepoint(event.pos): 
-                                settings['show_ids'] = not settings['show_ids']
-                            elif 'toggle_weights' in rects and rects['toggle_weights'].collidepoint(event.pos): 
-                                settings['show_weights'] = not settings['show_weights']
-                            elif 'toggle_deleted' in rects and rects['toggle_deleted'].collidepoint(event.pos): 
-                                settings['show_deleted'] = not settings['show_deleted']
-                            elif 'toggle_unseen' in rects and rects['toggle_unseen'].collidepoint(event.pos): 
-                                settings['show_unseen'] = not settings['show_unseen']
+                            if 'reset' in rects and rects['reset'].collidepoint(event.pos): self.current_state = STATE_EDIT
+                            elif 'table_toggle' in rects and rects['table_toggle'].collidepoint(event.pos): settings['show_table'] = not settings['show_table']
+                            elif 'toggle_ids' in rects and rects['toggle_ids'].collidepoint(event.pos): settings['show_ids'] = not settings['show_ids']
+                            elif 'toggle_weights' in rects and rects['toggle_weights'].collidepoint(event.pos): settings['show_weights'] = not settings['show_weights']
+                            elif 'toggle_deleted' in rects and rects['toggle_deleted'].collidepoint(event.pos): settings['show_deleted'] = not settings['show_deleted']
+                            elif 'toggle_unseen' in rects and rects['toggle_unseen'].collidepoint(event.pos): settings['show_unseen'] = not settings['show_unseen']
                         else:
                             self.is_panning = True
                             self.pan_start = np.array(mouse_pos, dtype='f4')
@@ -196,19 +191,13 @@ class KruskalApp:
                             self.graph_renderer.update_states(self.current_edge_idx, 1, np.array([0.0, 0.0], dtype='f4'))
                             self.graph_renderer.state_data[self.current_edge_idx*2] = 0.0
                             self.graph_renderer.state_data[self.current_edge_idx*2+1] = 0.0
-                            
-                            # UNDO Logic
                             self.parent = np.arange(len(self.parent))
                             self.rank[:] = 0
-                            self.mst_edges_count, self.mst_total_weight = logic.fast_forward_dsu(
-                                self.sorted_edges, self.current_edge_idx, self.parent, self.rank
-                            )
+                            self.mst_edges_count, self.mst_total_weight = logic.fast_forward_dsu(self.sorted_edges, self.current_edge_idx, self.parent, self.rank)
                             self.is_paused = True
-                            # Force update visualization next frame
                             self.force_vis_update = True
                     elif event.key == pygame.K_RIGHT: self.is_paused = False
         
-        # Handle Slider Dragging in Run Mode
         if self.current_state == STATE_RUN and mouse_buttons[0] and not self.is_panning:
             if self.run_overlay.slider_rect.collidepoint(mouse_pos):
                 self.speed_value = max(0.0, min(1.0, (mouse_pos[0] - self.run_overlay.slider_rect.x) / self.run_overlay.slider_rect.width))
@@ -217,65 +206,83 @@ class KruskalApp:
         self.frame_count += 1
         should_step = False
         batch_size = 1
-        
-        # Handle "Force Update" from Undo logic
-        if getattr(self, 'force_vis_update', False):
-            should_step = False # Don't advance, just visualize
+        if getattr(self, 'force_vis_update', False): should_step = False
         elif self.mst_edges_count < (len(self.parent)-1) and self.current_edge_idx < len(self.sorted_edges):
             if self.speed_value < 0.05:
-                if not self.is_paused: 
-                    should_step = True; self.is_paused = True
+                if not self.is_paused: should_step = True; self.is_paused = True
             else:
                 batch_size = int(1 + (self.speed_value * 50)**3)
                 should_step = True
 
         if should_step:
-            processed, added, w_added = logic.process_batch(
-                self.sorted_edges, self.current_edge_idx, batch_size, 
-                self.parent, self.rank, self.graph_renderer.state_data
-            )
-            
+            processed, added, w_added = logic.process_batch(self.sorted_edges, self.current_edge_idx, batch_size, self.parent, self.rank, self.graph_renderer.state_data)
             start_byte = self.current_edge_idx * 2 * 4
             data_slice = self.graph_renderer.state_data[self.current_edge_idx*2 : (self.current_edge_idx+processed)*2]
             self.graph_renderer.state_vbo.write(data_slice.tobytes(), offset=start_byte)
-            
             self.current_edge_idx += processed
             self.mst_edges_count += added
             self.mst_total_weight += w_added
-            
             if self.run_overlay.settings['show_table']:
                  rows_visible = (self.screen.get_size()[1] - 50) // 25
                  if self.current_edge_idx > self.run_overlay.settings['scroll'] + rows_visible - 2:
                      self.run_overlay.settings['scroll'] = self.current_edge_idx - rows_visible + 2
 
-        # Visual Update Frequency
         if self.frame_count == 1 or self.frame_count % 10 == 0 or should_step or getattr(self, 'force_vis_update', False):
              roots = logic.get_all_roots(self.parent)
              statuses = logic.get_node_statuses(self.parent, self.rank)
-             
              valid_roots = roots[:len(self.circle_renderer.colors)]
              valid_stats = statuses[:len(self.circle_renderer.colors)]
              self.circle_renderer.update_state(valid_roots, valid_stats)
              self.force_vis_update = False
-
         self.graph_renderer.set_visibility(self.run_overlay.settings['show_deleted'], self.run_overlay.settings['show_unseen'])
 
     def render(self):
-        self.ctx.clear(0.05, 0.05, 0.05)
+        # 1. Sync BG Color with Config (Normalized 0-1)
+        r, g, b = COLOR_BG
+        self.ctx.clear(r/255.0, g/255.0, b/255.0)
 
         if self.current_state == STATE_EDIT:
-            surface = self.graph_editor.draw()
+            # --- HYBRID RENDERING FOR EDITOR ---
+            
+            # A. Update GPU buffers if data changed
+            if self.graph_editor.dirty:
+                raw_edges, geom, raw_nodes, _ = self.graph_editor.export_data()
+                
+                # Create renderers if NODES exist
+                if raw_nodes is not None and len(raw_nodes) > 0:
+                    self.edit_graph_renderer = gui.GraphRenderer(self.ctx, len(raw_edges), geom)
+                    self.edit_graph_renderer.set_mode(1) # Set to Editor Mode (Solid lines)
+                    
+                    self.edit_circle_renderer = gui.CircleRenderer(self.ctx, raw_nodes)
+                    self.edit_circle_renderer.update_state(np.arange(len(raw_nodes)), np.zeros(len(raw_nodes)))
+                else:
+                    self.edit_graph_renderer = None
+                    self.edit_circle_renderer = None
+                
+                self.graph_editor.dirty = False
+
+            # B. Draw GPU Graph (Behind UI)
+            if self.edit_graph_renderer and self.edit_circle_renderer:
+                w, h = self.screen.get_size()
+                self.edit_graph_renderer.set_camera(self.graph_editor.zoom, self.graph_editor.offset, w, h)
+                
+                if self.edit_graph_renderer.n_edges > 0:
+                    self.edit_graph_renderer.render()
+                
+                self.edit_circle_renderer.render(self.edit_graph_renderer.current_matrix, point_size=10.0, zoom=self.graph_editor.zoom)
+
+            # C. Draw UI on top (Transparent background if GPU active)
+            use_gpu = (self.edit_circle_renderer is not None)
+            surface = self.graph_editor.draw(draw_graph=not use_gpu) 
+            
             self.ui_renderer.update_texture(surface)
             self.ui_renderer.render()
 
         elif self.current_state == STATE_RUN:
             self.update_simulation()
-            
             self.graph_renderer.render()
             pt_size = 5.0 if len(self.parent) > 2000 else 12.0
             self.circle_renderer.render(self.graph_renderer.current_matrix, point_size=pt_size, zoom=self.graph_renderer.zoom)
-            
-            # Prepare data for overlay
             context = {
                 'sorted_edges': self.sorted_edges,
                 'current_idx': self.current_edge_idx,
@@ -288,7 +295,6 @@ class KruskalApp:
                 'labels': self.labels,
                 'renderer': self.graph_renderer
             }
-            
             self.run_overlay.draw(self.ui_surface, context)
             self.ui_renderer.update_texture(self.ui_surface)
             self.ui_renderer.render()

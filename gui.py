@@ -73,16 +73,10 @@ class CircleRenderer:
                     float raw_size = u_base_size * u_zoom;
                     
                     if (in_status > 0.5) {
-                        // --- SELECTED (MST) NODE ---
-                        // Multiply size by 2.0 so it grows faster
-                        // Allow it to grow very large (up to 120.0)
                         float s = raw_size * 2.0;
                         gl_PointSize = clamp(s, 6.0, 60.0);
                         v_color = in_color;
                     } else {
-                        // --- UNSELECTED NODE ---
-                        // Keep strict limit on how big these can get (max 30.0)
-                        // This ensures they always look "background" compared to MST nodes
                         gl_PointSize = clamp(raw_size, 2.0, 20.0);
                         v_color = vec3(0.0, 0.5, 1.0); 
                     }
@@ -99,33 +93,44 @@ class CircleRenderer:
                 }
             '''
         )
-        self.vbo = self.ctx.buffer(vertices.astype('f4').tobytes())
-        self.colors = np.zeros((self.n_verts, 3), dtype='f4')
-        self.color_vbo = self.ctx.buffer(self.colors.tobytes(), dynamic=True)
-        self.status = np.zeros(self.n_verts, dtype='f4')
-        self.status_vbo = self.ctx.buffer(self.status.tobytes(), dynamic=True)
         
-        self.vao = self.ctx.vertex_array(self.prog, [
-            (self.vbo, '2f', 'in_vert'),
-            (self.color_vbo, '3f', 'in_color'),
-            (self.status_vbo, '1f', 'in_status')
-        ])
+        # --- FIX: Handle 0 Vertices safely ---
+        if self.n_verts > 0:
+            self.vbo = self.ctx.buffer(vertices.astype('f4').tobytes())
+            self.colors = np.zeros((self.n_verts, 3), dtype='f4')
+            self.color_vbo = self.ctx.buffer(self.colors.tobytes(), dynamic=True)
+            self.status = np.zeros(self.n_verts, dtype='f4')
+            self.status_vbo = self.ctx.buffer(self.status.tobytes(), dynamic=True)
+            
+            self.vao = self.ctx.vertex_array(self.prog, [
+                (self.vbo, '2f', 'in_vert'),
+                (self.color_vbo, '3f', 'in_color'),
+                (self.status_vbo, '1f', 'in_status')
+            ])
 
-        np.random.seed(999) 
-        self.palette = np.random.uniform(0.2, 1.0, (self.n_verts + 1, 3)).astype('f4')
+            np.random.seed(999) 
+            self.palette = np.random.uniform(0.2, 1.0, (self.n_verts + 1, 3)).astype('f4')
+        else:
+            self.vbo = None
+            self.color_vbo = None
+            self.status_vbo = None
+            self.vao = None
+            self.palette = np.zeros((1, 3), dtype='f4')
 
     def update_state(self, roots, statuses):
-        new_colors = self.palette[roots]
-        self.color_vbo.write(new_colors.tobytes())
-        self.status_vbo.write(statuses.astype('f4').tobytes())
+        if self.color_vbo and len(roots) > 0:
+            new_colors = self.palette[roots]
+            self.color_vbo.write(new_colors.tobytes())
+            self.status_vbo.write(statuses.astype('f4').tobytes())
 
     def render(self, transform_matrix, point_size=14.0, zoom=1.0):
-        self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
-        self.ctx.enable(moderngl.BLEND)
-        self.prog['u_transform'].write(transform_matrix)
-        self.prog['u_base_size'].value = point_size
-        self.prog['u_zoom'].value = zoom
-        self.vao.render(moderngl.POINTS)
+        if self.vao:
+            self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
+            self.ctx.enable(moderngl.BLEND)
+            self.prog['u_transform'].write(transform_matrix)
+            self.prog['u_base_size'].value = point_size
+            self.prog['u_zoom'].value = zoom
+            self.vao.render(moderngl.POINTS)
 
 class GraphRenderer:
     def __init__(self, ctx, n_edges, line_geometry):
@@ -155,31 +160,45 @@ class GraphRenderer:
                 out vec4 f_color;
                 uniform float u_show_rejected;
                 uniform float u_show_unseen;
+                uniform int u_mode; // 0 = Simulation, 1 = Editor
                 
                 void main() {
-                    if (v_state > 2.9) {
-                        f_color = vec4(0.0, 1.0, 0.2, 1.0); // Selecting (Green)
-                    } else if (v_state > 1.9) {
-                        f_color = vec4(1.0, 0.8, 0.0, 1.0); // MST (Gold)
-                    } else if (v_state > 0.9) {
-                        // Rejected (Red)
-                        if (u_show_rejected < 0.5) discard;
-                        f_color = vec4(1.0, 0.0, 0.0, 0.2); 
+                    if (u_mode == 1) {
+                        // EDITOR MODE: Solid Lines
+                        f_color = vec4(0.4, 0.4, 0.5, 1.0);
                     } else {
-                        // Unseen (Grey)
-                        if (u_show_unseen < 0.5) discard;
-                        f_color = vec4(0.3, 0.3, 0.3, 0.15); 
+                        // SIMULATION MODE
+                        if (v_state > 2.9) {
+                            f_color = vec4(0.0, 1.0, 0.2, 1.0); // Selecting (Green)
+                        } else if (v_state > 1.9) {
+                            f_color = vec4(1.0, 0.8, 0.0, 1.0); // MST (Gold)
+                        } else if (v_state > 0.9) {
+                            if (u_show_rejected < 0.5) discard;
+                            f_color = vec4(1.0, 0.0, 0.0, 0.2); 
+                        } else {
+                            if (u_show_unseen < 0.5) discard;
+                            f_color = vec4(0.3, 0.3, 0.3, 0.15); 
+                        }
                     }
                 }
             '''
         )
-        self.vbo = self.ctx.buffer(line_geometry.tobytes())
-        self.state_data = np.zeros(n_edges * 2, dtype='f4') 
-        self.state_vbo = self.ctx.buffer(self.state_data.tobytes(), dynamic=True)
-        self.vao = self.ctx.vertex_array(self.prog, [
-            (self.vbo, '2f', 'in_vert'),
-            (self.state_vbo, '1f', 'in_state')
-        ])
+        
+        # --- FIX: Handle 0 Edges safely ---
+        if self.n_edges > 0:
+            self.vbo = self.ctx.buffer(line_geometry.tobytes())
+            self.state_data = np.zeros(n_edges * 2, dtype='f4') 
+            self.state_vbo = self.ctx.buffer(self.state_data.tobytes(), dynamic=True)
+            self.vao = self.ctx.vertex_array(self.prog, [
+                (self.vbo, '2f', 'in_vert'),
+                (self.state_vbo, '1f', 'in_state')
+            ])
+        else:
+            self.vbo = None
+            self.state_vbo = None
+            self.vao = None
+            self.state_data = np.array([])
+
         self.current_matrix = Matrix44.identity(dtype='f4').tobytes()
         
         # Default visibility
@@ -193,8 +212,13 @@ class GraphRenderer:
         self.update_camera()
 
     def set_visibility(self, show_rejected, show_unseen):
-        self.prog['u_show_rejected'].value = 1.0 if show_rejected else 0.0
-        self.prog['u_show_unseen'].value = 1.0 if show_unseen else 0.0
+        if 'u_show_rejected' in self.prog:
+            self.prog['u_show_rejected'].value = 1.0 if show_rejected else 0.0
+            self.prog['u_show_unseen'].value = 1.0 if show_unseen else 0.0
+
+    def set_mode(self, mode_id):
+        if 'u_mode' in self.prog:
+            self.prog['u_mode'].value = mode_id
 
     def update_camera(self):
         sx = (2.0 * self.zoom) / self.width
@@ -210,14 +234,17 @@ class GraphRenderer:
         ], dtype='f4')
         
         self.current_matrix = matrix.tobytes()
-        self.prog['u_transform'].write(self.current_matrix)
+        if 'u_transform' in self.prog:
+            self.prog['u_transform'].write(self.current_matrix)
 
     def update_states(self, start_idx, count, new_states_slice):
-        offset = start_idx * 2 * 4 
-        self.state_vbo.write(new_states_slice.tobytes(), offset=offset)
+        if self.state_vbo:
+            offset = start_idx * 2 * 4 
+            self.state_vbo.write(new_states_slice.tobytes(), offset=offset)
 
     def render(self):
-        self.vao.render(moderngl.LINES, vertices=self.n_edges * 2)
+        if self.vao:
+            self.vao.render(moderngl.LINES, vertices=self.n_edges * 2)
 
 class RuntimeOverlay:
     """Handles the Pygame UI Overlay during the RUN state."""
