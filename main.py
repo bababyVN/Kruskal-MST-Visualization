@@ -55,8 +55,11 @@ class KruskalApp:
         self.pan_start = np.array([0,0], dtype='f4')
 
     def switch_to_run(self, limit_test=False):
+        # 1. Sync Camera: Editor -> Simulation
         self.run_zoom = self.graph_editor.zoom
         self.run_offset = self.graph_editor.offset.copy()
+        
+        # Reset Simulation State
         self.run_overlay.settings['scroll'] = 0
         self.mst_total_weight = 0.0 
         
@@ -111,6 +114,15 @@ class KruskalApp:
         self.mst_edges_count = 0
         self.current_state = STATE_RUN
 
+    def switch_to_edit(self):
+        """Switches back to Editor mode and preserves camera state."""
+        # 1. Sync Camera: Simulation -> Editor
+        self.graph_editor.zoom = self.run_zoom
+        self.graph_editor.offset = self.run_offset.copy()
+        
+        # 2. Switch State
+        self.current_state = STATE_EDIT
+
     def handle_events(self):
         events = pygame.event.get()
         mouse_pos = pygame.mouse.get_pos()
@@ -148,7 +160,8 @@ class KruskalApp:
                         if clicked_ui:
                             rects = self.run_overlay.interactive_rects
                             settings = self.run_overlay.settings
-                            if 'reset' in rects and rects['reset'].collidepoint(event.pos): self.current_state = STATE_EDIT
+                            # UPDATED: Use switch_to_edit()
+                            if 'reset' in rects and rects['reset'].collidepoint(event.pos): self.switch_to_edit()
                             elif 'table_toggle' in rects and rects['table_toggle'].collidepoint(event.pos): settings['show_table'] = not settings['show_table']
                             elif 'toggle_ids' in rects and rects['toggle_ids'].collidepoint(event.pos): settings['show_ids'] = not settings['show_ids']
                             elif 'toggle_weights' in rects and rects['toggle_weights'].collidepoint(event.pos): settings['show_weights'] = not settings['show_weights']
@@ -184,7 +197,8 @@ class KruskalApp:
                         self.graph_renderer.set_camera(self.run_zoom, self.run_offset, self.screen.get_width(), self.screen.get_height())
 
                 elif event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r: self.current_state = STATE_EDIT
+                    # UPDATED: Use switch_to_edit()
+                    if event.key == pygame.K_r: self.switch_to_edit()
                     elif event.key == pygame.K_LEFT:
                         if self.current_edge_idx > 0:
                             self.current_edge_idx -= 1
