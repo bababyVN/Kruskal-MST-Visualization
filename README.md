@@ -1,15 +1,15 @@
-# Kruskal's Algorithm Visualization Sandbox
+# Kruskal's Algorithm Visualization
 
-A high-performance, interactive visualization tool for Kruskal's Minimum Spanning Tree (MST) algorithm. This application features a fully functional graph editor and a GPU-accelerated simulation mode capable of handling massive graphs (up to 100,000+ vertices).
+An interactive visualization tool for Kruskal's Minimum Spanning Tree (MST) algorithm. This application features a fully functional graph editor and a GPU-accelerated simulation mode capable of handling massive graphs (up to 100,000+ vertices).
 
 ## Features
 
-* **Interactive Graph Editor**: Draw nodes, connect edges, and arrange your graph layout with a user-friendly interface.
-* **High-Performance Rendering**: Built with **ModernGL** (OpenGL) to render 100,000+ edges at 60 FPS.
+* **Interactive Graph Editor**: Draw nodes, connect edges, and arrange graph layout.
+* **High-Performance Rendering**: Built with **ModernGL** (OpenGL) to render.
 * **Real-Time Simulation**: Watch Kruskal's algorithm find the MST step-by-step or automatically.
 * **Large Scale Testing**: Includes a "Test Mode" to instantly generate and process massive random graphs.
 * **Save & Load System**: Save your graph layouts (topology + coordinates) or structure-only files.
-* **Optimized Logic**: Uses **Numba** (JIT compilation) for instant graph processing.
+* **Optimized Logic**: Uses **Numba** (JIT compilation) for graph processing.
 
 ## Installation
 
@@ -34,6 +34,7 @@ A high-performance, interactive visualization tool for Kruskal's Minimum Spannin
 
 ### Simulation Mode
 * **Slider**: Adjust simulation speed (Drag left for step-by-step, right for auto-speed).
+* **Space**: Plause/Play simulation.
 * **Left Arrow**: Step backward / Undo.
 * **Right Arrow**: Step forward / Resume.
 * **R**: Return to **Editor Mode**.
@@ -42,8 +43,8 @@ A high-performance, interactive visualization tool for Kruskal's Minimum Spannin
 
 ## Project Structure
 
-* `main.py`: The entry point. Handles the main loop, state switching, and simulation logic.
-* `editor.py`: Manages the graph creation tools, input handling, and file I/O.
-* `gui.py`: Handles the high-performance OpenGL rendering (Circles, Lines) and the UI overlay.
-* `logic.py`: Contains the Disjoint Set Union (DSU) and MST algorithms, optimized with Numba.
-* `config.py`: Centralized configuration for colors, screen size, and constants.
+* `main.py`
+* `editor.py`
+* `gui.py`
+* `logic.py`
+* `config.py`
